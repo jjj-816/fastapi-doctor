@@ -109,7 +109,7 @@ class FakeLLM:
         )
         self.prompts: list[str] = []
 
-    def with_structured_output(self, schema):
+    def with_structured_output(self, schema, method=None):
         return self
 
     def invoke(self, prompt):

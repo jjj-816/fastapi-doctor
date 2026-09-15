@@ -302,7 +302,15 @@ def make_diagnose_node(llm):
     """构建 diagnose 节点；LLM 可注入，测试用假实现不依赖模型服务。"""
 
     def diagnose(state: DiagnosisState) -> dict:
-        structured = llm.with_structured_output(DiagnosisReport)
+        # GLM/DeepSeek 等 OpenAI 兼容服务对 json_schema 的服务端约束不严格，
+        # 模型会用 ```json 围栏输出导致严格解析失败；这类服务改走 function
+        # calling，从 tool_call 参数取结构化结果。本地 Ollama 用默认即可。
+        if type(llm).__module__.startswith("langchain_openai"):
+            structured = llm.with_structured_output(
+                DiagnosisReport, method="function_calling"
+            )
+        else:
+            structured = llm.with_structured_output(DiagnosisReport)
         report = structured.invoke(build_diagnosis_prompt(state))
         return {"diagnosis": report, "status": RunStatus.DIAGNOSED}
 
