@@ -14,10 +14,11 @@ from fastapi_doctor.domain.models import (
     RunStatus,
 )
 from fastapi_doctor.graph.builder import build_diagnosis_graph
+from fastapi_doctor.llm import build_llm
 from fastapi_doctor.retrieval.retriever import KnowledgeRetriever
 
 app = FastAPI(title="FastAPI Doctor", version="0.1.0")
-graph = build_diagnosis_graph(retriever=KnowledgeRetriever())
+graph = build_diagnosis_graph(retriever=KnowledgeRetriever(), llm=build_llm())
 
 
 @app.get("/api/health")

@@ -16,6 +16,9 @@ class RunStatus(StrEnum):
     NEEDS_CLARIFICATION = "needs_clarification"
     PLANNED = "planned"
     RETRIEVED = "retrieved"
+    DIAGNOSED = "diagnosed"
+    NEEDS_CONFIRMATION = "needs_confirmation"
+    COMPLETED = "completed"
     FAILED = "failed"
 
 
@@ -104,6 +107,28 @@ class EvidenceGrade(BaseModel):
     missing_terms: list[str] = Field(default_factory=list)
 
 
+class DiagnosisReport(BaseModel):
+    """诊断节点输出（设计 §4.6），只允许基于引用证据下结论。"""
+
+    most_likely_cause: str
+    confidence: float = Field(ge=0, le=1)
+    supporting_evidence: list[str] = Field(default_factory=list)
+    investigation_steps: list[str] = Field(default_factory=list)
+    fix_suggestions: list[str] = Field(default_factory=list)
+    verification: list[str] = Field(default_factory=list)
+    alternative_causes: list[str] = Field(default_factory=list)
+    citations: list[str] = Field(default_factory=list)
+
+
+class ReviewResult(BaseModel):
+    """审查节点输出：证据一致性为确定性检查，危险命令交给人工确认。"""
+
+    passed: bool
+    issues: list[str] = Field(default_factory=list)
+    dangerous_commands: list[str] = Field(default_factory=list)
+    needs_confirmation: bool = False
+
+
 class DiagnosisRequest(BaseModel):
     """用户提交的原始故障材料，并在 API 边界限制各字段大小。"""
 
@@ -123,3 +148,5 @@ class DiagnosisResponse(BaseModel):
     plan: InvestigationPlan | None = None
     evidence: list[Evidence] = Field(default_factory=list)
     grade: EvidenceGrade | None = None
+    diagnosis: DiagnosisReport | None = None
+    review: ReviewResult | None = None

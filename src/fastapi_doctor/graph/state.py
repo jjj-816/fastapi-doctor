@@ -7,10 +7,12 @@
 from typing import NotRequired, TypedDict
 
 from fastapi_doctor.domain.models import (
+    DiagnosisReport,
     Evidence,
     EvidenceGrade,
     FaultInfo,
     InvestigationPlan,
+    ReviewResult,
     RunStatus,
     TracebackInfo,
 )
@@ -32,4 +34,6 @@ class DiagnosisState(TypedDict):
     evidence: NotRequired[list[Evidence]]
     grade: NotRequired[EvidenceGrade]
     retry_count: NotRequired[int]
+    diagnosis: NotRequired[DiagnosisReport]
+    review: NotRequired[ReviewResult]
     error: NotRequired[str]

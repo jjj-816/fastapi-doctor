@@ -4,7 +4,7 @@ from fastapi.testclient import TestClient
 
 from fastapi_doctor import api
 from fastapi_doctor.graph.builder import build_diagnosis_graph
-from tests.conftest import CASE_MD
+from tests.conftest import CASE_MD, FakeLLM
 
 
 client = TestClient(api.app)
@@ -16,10 +16,10 @@ def test_health() -> None:
     assert response.json() == {"status": "ok"}
 
 
-def test_diagnose_returns_retrieved_evidence(monkeypatch, make_fake_retriever) -> None:
+def test_diagnose_returns_full_report(monkeypatch, make_fake_retriever) -> None:
     retriever = make_fake_retriever({"cases/case-db.md": CASE_MD})
     monkeypatch.setattr(
-        api, "graph", build_diagnosis_graph(retriever=retriever)
+        api, "graph", build_diagnosis_graph(retriever=retriever, llm=FakeLLM())
     )
 
     response = client.post(
@@ -32,9 +32,10 @@ def test_diagnose_returns_retrieved_evidence(monkeypatch, make_fake_retriever) -
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["status"] == "retrieved"
+    assert payload["status"] == "completed"
     assert payload["fault_info"]["component"] == "database"
     assert payload["plan"] is not None
-    assert payload["evidence"]
     assert payload["evidence"][0]["doc_id"] == "case-db"
     assert payload["grade"]["sufficient"] is True
+    assert payload["diagnosis"]["most_likely_cause"]
+    assert payload["review"]["passed"] is True

@@ -9,10 +9,12 @@ import re
 from fastapi_doctor import config
 from fastapi_doctor.analysis import analyze_traceback
 from fastapi_doctor.domain.models import (
+    DiagnosisReport,
     Evidence,
     EvidenceGrade,
     FaultInfo,
     InvestigationPlan,
+    ReviewResult,
     RunStatus,
     SourceType,
     TracebackInfo,
@@ -226,3 +228,98 @@ def route_after_grade(state: DiagnosisState) -> str:
     if state.get("retry_count", 0) >= config.MAX_QUERY_REWRITES:
         return "done"
     return "rewrite"
+
+
+def build_diagnosis_prompt(state: DiagnosisState) -> str:
+    """组装诊断提示词：故障材料 + 截断后的证据，要求只依据证据下结论。"""
+    fault = state["fault_info"]
+    evidence = state.get("evidence", [])[: config.MAX_EVIDENCE_ITEMS]
+    evidence_blocks = []
+    for item in evidence:
+        content = item.content[: config.MAX_EVIDENCE_CHARS]
+        evidence_blocks.append(
+            f"[证据 {item.parent_id}] 来源={item.doc_id} 类型={item.source_type}"
+            f" 标题={item.title or item.section}\n{content}"
+        )
+    evidence_text = "\n\n".join(evidence_blocks) or "（无检索证据）"
+
+    return (
+        "你是一名 Python Web 服务故障诊断专家。请只依据给定证据给出诊断，"
+        "不要编造证据中不存在的事实；证据不足时降低置信度并说明。\n\n"
+        f"## 故障描述\n{state['description']}\n\n"
+        f"## 日志\n{state['logs'][:2000] or '（无）'}\n\n"
+        f"## 结构化信息\n"
+        f"- 框架: {fault.framework or '未知'}\n"
+        f"- 组件: {fault.component or '未知'}\n"
+        f"- 异常类型: {fault.exception_type or '未知'}\n"
+        f"- HTTP 状态码: {fault.http_status or '未知'}\n\n"
+        f"## 检索证据\n{evidence_text}\n\n"
+        "请用中文输出 JSON，字段为：most_likely_cause（最可能原因）、"
+        "confidence（0 到 1 的小数）、"
+        "supporting_evidence（引用证据时只填证据块方括号里的 parent_id，"
+        "例如 case-db_p0，禁止复制整行来源信息）、"
+        "investigation_steps（排查步骤）、fix_suggestions（修复建议）、"
+        "verification（验证方法）、alternative_causes（替代原因）、"
+        "citations（参考资料列表，只填证据块的来源 URL 或 doc_id，禁止整段复制）。"
+    )
+
+
+def make_diagnose_node(llm):
+    """构建 diagnose 节点；LLM 可注入，测试用假实现不依赖模型服务。"""
+
+    def diagnose(state: DiagnosisState) -> dict:
+        structured = llm.with_structured_output(DiagnosisReport)
+        report = structured.invoke(build_diagnosis_prompt(state))
+        return {"diagnosis": report, "status": RunStatus.DIAGNOSED}
+
+    return diagnose
+
+
+def _find_dangerous_commands(suggestions: list[str]) -> list[str]:
+    """扫描修复建议中的危险命令片段。"""
+    dangerous = []
+    for suggestion in suggestions:
+        lowered = suggestion.lower()
+        for pattern in config.DANGEROUS_COMMAND_PATTERNS:
+            if pattern in lowered:
+                dangerous.append(suggestion)
+                break
+    return dangerous
+
+
+def review(state: DiagnosisState) -> dict:
+    """确定性审查（§4.6）：引用一致性 + 危险命令人工确认。
+
+    「证据问题返回检索节点」与 LangGraph interrupt 人工确认将在异步
+    SSE 接口阶段接入；当前把危险建议标记为待确认并结束运行。
+    """
+    report = state["diagnosis"]
+    evidence = state.get("evidence", [])
+    issues: list[str] = []
+
+    # 引用整篇已检索到的文档（doc_id）与引用具体父块（parent_id）都算合法。
+    valid_ids = {item.parent_id for item in evidence} | {
+        item.doc_id for item in evidence
+    }
+    cited = set(report.supporting_evidence)
+    unknown = sorted(cited - valid_ids)
+    if unknown:
+        issues.append(f"结论引用了不存在或未检索到的证据：{unknown}")
+    if evidence and not report.supporting_evidence:
+        issues.append("已有检索证据，但结论未引用任何证据")
+
+    dangerous = _find_dangerous_commands(report.fix_suggestions)
+
+    return {
+        "review": ReviewResult(
+            passed=not issues,
+            issues=issues,
+            dangerous_commands=dangerous,
+            needs_confirmation=bool(dangerous),
+        ),
+        "status": (
+            RunStatus.NEEDS_CONFIRMATION
+            if dangerous
+            else RunStatus.COMPLETED
+        ),
+    }
