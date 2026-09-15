@@ -12,7 +12,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from uuid import uuid4
 
-from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi import FastAPI, File, HTTPException, Request, Response, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from langgraph.types import Command
 
@@ -28,6 +28,7 @@ from fastapi_doctor.domain.models import (
     RunSummary,
 )
 from fastapi_doctor.graph.builder import build_diagnosis_graph
+from fastapi_doctor.ingestion import IngestionError, KnowledgeImporter, OllamaUnavailableError
 from fastapi_doctor.llm import build_llm
 from fastapi_doctor.retrieval.parent_store import ParentStore
 from fastapi_doctor.retrieval.retriever import KnowledgeRetriever
@@ -36,7 +37,11 @@ from fastapi_doctor.security import mask_secrets
 
 
 def _build_graph():
-    """构建带 Checkpointer 的诊断图；SQLite 可用则持久化恢复点。"""
+    """构建带 Checkpointer 的诊断图；SQLite 可用则持久化恢复点。
+
+    检索器实例同时挂到 app.state：上传入库必须与运行中的图共享同一份
+    本地 Qdrant 客户端，避免并发打开两份索引。
+    """
     checkpointer = None
     try:
         import sqlite3
@@ -49,8 +54,10 @@ def _build_graph():
         from langgraph.checkpoint.memory import MemorySaver
 
         checkpointer = MemorySaver()
+    retriever = KnowledgeRetriever()
+    app.state.retriever = retriever
     return build_diagnosis_graph(
-        retriever=KnowledgeRetriever(), llm=build_llm(), checkpointer=checkpointer
+        retriever=retriever, llm=build_llm(), checkpointer=checkpointer
     )
 
 
@@ -269,6 +276,75 @@ def list_kb_documents(req: Request) -> list[dict]:
     return store.list_documents()
 
 
+MAX_UPLOAD_BYTES = 2 * 1024 * 1024
+
+
+@app.post("/api/kb/upload")
+async def upload_kb_documents(
+    req: Request, files: list[UploadFile] = File(...)
+) -> dict:
+    """上传 Markdown 文档入库：落盘语料目录后复用既有导入流程（幂等）。
+
+    与运行中的诊断图共享同一检索器（同一份本地 Qdrant 客户端）；
+    同名/非法文件在落盘前拒绝，导入结果按 imported/skipped/failed 如实回报。
+    """
+    retriever: KnowledgeRetriever = req.app.state.retriever
+    markdown_dir = config.MARKDOWN_DIR
+    existing = {path.stem.lower() for path in markdown_dir.rglob("*.md")}
+    saved: list[str] = []
+    rejected: list[dict] = []
+    batch_stems: set[str] = set()
+    for upload in files:
+        name = Path(upload.filename or "").name
+        stem = Path(name).stem.lower()
+        if not name.lower().endswith((".md", ".markdown")):
+            rejected.append(
+                {"filename": upload.filename or name, "reason": "仅支持 .md / .markdown"}
+            )
+        elif stem in existing or stem in batch_stems:
+            rejected.append({"filename": name, "reason": "知识库已存在同名文档"})
+        else:
+            content = await upload.read()
+            if len(content) > MAX_UPLOAD_BYTES:
+                rejected.append({"filename": name, "reason": "单文件超过 2MB"})
+            else:
+                (markdown_dir / name).write_bytes(content)
+                saved.append(name)
+                batch_stems.add(stem)
+    empty: dict = {
+        "saved": [],
+        "rejected": rejected,
+        "imported": [],
+        "skipped": [],
+        "failed": [],
+    }
+    if not saved:
+        return empty
+
+    importer = KnowledgeImporter(
+        markdown_dir=markdown_dir,
+        parent_store=retriever.parent_store,
+        vector_manager=retriever.vector_manager,
+    )
+    try:
+        report = await asyncio.to_thread(importer.import_all)
+    except OllamaUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    except IngestionError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    return {
+        "saved": saved,
+        "rejected": rejected,
+        "imported": [r.path.name for r in report.results if r.status == "imported"],
+        "skipped": [r.path.name for r in report.results if r.status == "skipped"],
+        "failed": [
+            {"file": r.path.name, "error": r.error}
+            for r in report.results
+            if r.status == "failed"
+        ],
+    }
+
+
 @app.get("/api/kb/doc/{doc_id}")
 def kb_document(doc_id: str, req: Request) -> Response:
     """本地知识库整篇文档视图：参考资料引用的原文查看入口。
@@ -282,7 +358,7 @@ def kb_document(doc_id: str, req: Request) -> Response:
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail="知识库中不存在该文档")
     metadata = doc["metadata"]
-    title = str(metadata.get("title") or doc["doc_id"])
+    title = doc["title"]
     parts = [doc["doc_id"], f"{doc['block_count']} 个父块"]
     if metadata.get("source_url"):
         parts.append(f"原始来源 {metadata['source_url']}")  # 纯文本展示，不提供跳转

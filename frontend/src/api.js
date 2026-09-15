@@ -35,6 +35,23 @@ export const api = {
     request(`/kb/doc/${encodeURIComponent(docId)}`, {
       headers: { Accept: 'application/json' },
     }),
+  // 文件上传走 multipart，不能用 request() 的 JSON Content-Type。
+  uploadKbDocs: async (files) => {
+    const body = new FormData()
+    for (const f of files) body.append('files', f)
+    const res = await fetch(BASE + '/kb/upload', { method: 'POST', body })
+    if (!res.ok) {
+      let detail = `${res.status} ${res.statusText}`
+      try {
+        const err = await res.json()
+        if (err.detail) detail = err.detail
+      } catch {
+        /* 非 JSON 响应体，保留状态行 */
+      }
+      throw new Error(detail)
+    }
+    return res.json()
+  },
 }
 
 // 后端会出现的全部 SSE 事件名（EventSource 按 event 名分发）。

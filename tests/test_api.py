@@ -24,6 +24,8 @@ DANGER_REPORT = DiagnosisReport(
 
 def make_client(monkeypatch, tmp_path, make_fake_retriever, llm: FakeLLM):
     retriever = make_fake_retriever({"cases/case-db.md": CASE_MD})
+    # 上传接口与诊断图共用同一检索器（生产环境由 _build_graph 挂到 app.state）。
+    api.app.state.retriever = retriever
     monkeypatch.setattr(
         api,
         "_build_graph",
@@ -33,6 +35,7 @@ def make_client(monkeypatch, tmp_path, make_fake_retriever, llm: FakeLLM):
         "fastapi_doctor.config.APPLICATION_DB_PATH", tmp_path / "application.db"
     )
     monkeypatch.setattr("fastapi_doctor.config.PARENT_STORE_PATH", tmp_path / "parents")
+    monkeypatch.setattr("fastapi_doctor.config.MARKDOWN_DIR", tmp_path / "md")
     return TestClient(api.app)
 
 
@@ -69,6 +72,17 @@ def test_kb_views_serve_local_content(monkeypatch, tmp_path, make_fake_retriever
             json.dumps({"page_content": text, "metadata": metadata}, ensure_ascii=False),
             encoding="utf-8",
         )
+    # 无 frontmatter 标题的文档：title 记为 stem，读取时应回退正文第一个 H1。
+    (store_dir / "untitled-doc_p0.json").write_text(
+        json.dumps(
+            {
+                "page_content": "```text\n# 这是代码块里的注释\n```\n\n# 正文大标题\n\n内容",
+                "metadata": {"title": "untitled-doc", "source": "untitled-doc"},
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
     client = make_client(monkeypatch, tmp_path, make_fake_retriever, FakeLLM())
     with client:
         listing = client.get("/api/kb/docs")
@@ -83,6 +97,8 @@ def test_kb_views_serve_local_content(monkeypatch, tmp_path, make_fake_retriever
     demo = next(d for d in listing.json() if d["doc_id"] == "demo-doc")
     assert demo["block_count"] == 2
     assert demo["title"] == "本地知识库演示文档"
+    untitled = next(d for d in listing.json() if d["doc_id"] == "untitled-doc")
+    assert untitled["title"] == "正文大标题"  # 跳过代码块注释，取正文第一个 H1
     assert parent_view.status_code == 200
     assert "第一段内容" in parent_view.text
     assert "demo-doc_p0" in parent_view.text
@@ -92,6 +108,34 @@ def test_kb_views_serve_local_content(monkeypatch, tmp_path, make_fake_retriever
     assert json_view.json()["block_count"] == 2
     assert "第二段内容" in json_view.json()["content"]
     assert missing.status_code == 404
+
+
+def test_upload_kb_documents(monkeypatch, tmp_path, make_fake_retriever) -> None:
+    """上传 Markdown 走既有导入链路；同名/非法文件被拒并如实回报。"""
+    body = "# 新案例\n\n" + "这是一段足够长的正文内容用于分块测试验证导入链路。" * 30
+    client = make_client(monkeypatch, tmp_path, make_fake_retriever, FakeLLM())
+    with client:
+        first = client.post(
+            "/api/kb/upload",
+            files=[
+                ("files", ("new-case.md", body.encode("utf-8"), "text/markdown")),
+                ("files", ("notes.txt", b"not markdown", "text/plain")),
+            ],
+        )
+        again = client.post(
+            "/api/kb/upload",
+            files={"files": ("new-case.md", b"# x", "text/markdown")},
+        )
+        listing = client.get("/api/kb/docs").json()
+
+    result = first.json()
+    assert result["imported"] == ["new-case.md"]
+    assert result["rejected"] == [{"filename": "notes.txt", "reason": "仅支持 .md / .markdown"}]
+    assert again.json()["rejected"] == [
+        {"filename": "new-case.md", "reason": "知识库已存在同名文档"}
+    ]
+    uploaded = next(d for d in listing if d["doc_id"] == "new-case")
+    assert uploaded["title"] == "新案例"  # 无 frontmatter，回退正文 H1
 
 
 def test_list_runs_returns_history_newest_first(

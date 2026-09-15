@@ -11,6 +11,22 @@ from pathlib import Path
 from fastapi_doctor import config
 
 
+def _first_h1(text: str) -> str:
+    """取正文第一个一级标题；跳过代码块，作为无 frontmatter 标题时的展示兜底。"""
+    in_fence = False
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
+        if stripped.startswith("# "):
+            # mkdocs 风格锚点后缀（"# Title { #anchor }"）不进入展示标题。
+            return re.sub(r"\s*\{.*\}\s*$", "", stripped[2:]).strip()
+    return ""
+
+
 class ParentStore:
     """以一个 JSON 文件对应一个父块的方式进行持久化。"""
 
@@ -72,9 +88,14 @@ class ParentStore:
         if not paths:
             raise FileNotFoundError(safe_id)
         blocks = [json.loads(path.read_text(encoding="utf-8")) for path in paths]
+        content = "\n\n".join(block["page_content"] for block in blocks)
+        title = str(blocks[0]["metadata"].get("title") or "")
+        if not title or title == safe_id:
+            title = _first_h1(content) or title or safe_id
         return {
             "doc_id": safe_id,
-            "content": "\n\n".join(block["page_content"] for block in blocks),
+            "title": title,
+            "content": content,
             "metadata": blocks[0]["metadata"],
             "block_count": len(blocks),
         }
@@ -89,11 +110,16 @@ class ParentStore:
         items = []
         for doc_id, paths in sorted(docs.items()):
             first = min(paths, key=lambda p: self._sort_key(p.stem))
-            metadata = json.loads(first.read_text(encoding="utf-8")).get("metadata", {})
+            first_payload = json.loads(first.read_text(encoding="utf-8"))
+            metadata = first_payload.get("metadata", {})
+            # 导入时无 frontmatter 标题的文件 title 记为 stem，此处回退正文 H1。
+            title = str(metadata.get("title") or "")
+            if not title or title == doc_id:
+                title = _first_h1(first_payload.get("page_content", "")) or title or doc_id
             items.append(
                 {
                     "doc_id": doc_id,
-                    "title": str(metadata.get("title") or doc_id),
+                    "title": title,
                     "source_type": str(metadata.get("source_type", "")),
                     "block_count": len(paths),
                     "components": [str(c) for c in metadata.get("components", [])],

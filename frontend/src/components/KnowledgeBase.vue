@@ -16,6 +16,9 @@ const error = ref('')
 const activeType = ref('all')
 const query = ref('')
 const selected = ref(null) // { doc_id, title, source_type, source_url, block_count, content }
+const fileInput = ref(null)
+const uploading = ref(false)
+const uploadNote = ref('')
 
 const counts = computed(() => {
   const c = { all: docs.value.length }
@@ -36,14 +39,43 @@ const filtered = computed(() => {
   })
 })
 
-onMounted(async () => {
+async function refreshDocs() {
   try {
     docs.value = await api.listKbDocs()
   } catch (e) {
     error.value = e.message
   }
+}
+
+onMounted(async () => {
+  await refreshDocs()
   loading.value = false
 })
+
+async function onFiles(event) {
+  const files = Array.from(event.target.files || [])
+  event.target.value = '' // 允许重复选择同一文件
+  if (!files.length) return
+  uploading.value = true
+  uploadNote.value = ''
+  try {
+    const res = await api.uploadKbDocs(files)
+    const parts = []
+    if (res.imported?.length) parts.push(`成功导入 ${res.imported.length} 篇`)
+    if (res.skipped?.length) parts.push(`跳过 ${res.skipped.length} 篇（已存在）`)
+    if (res.failed?.length) parts.push(`失败 ${res.failed.length} 篇`)
+    if (res.rejected?.length) {
+      parts.push(
+        `拒绝 ${res.rejected.length} 个（${res.rejected.map((r) => r.filename).join('、')}）`
+      )
+    }
+    uploadNote.value = parts.join('；') || '没有可导入的文件'
+    if (res.imported?.length) await refreshDocs()
+  } catch (e) {
+    uploadNote.value = `上传失败：${e.message}`
+  }
+  uploading.value = false
+}
 
 async function openDoc(doc) {
   try {
@@ -58,7 +90,25 @@ async function openDoc(doc) {
   <div class="kb-page">
     <div class="kb-side">
       <div class="kb-head">
-        <h3>知识库</h3>
+        <div class="kb-head-row">
+          <h3>知识库</h3>
+          <button
+            class="kb-upload-btn"
+            :disabled="uploading"
+            @click="fileInput && fileInput.click()"
+          >
+            {{ uploading ? '导入中…' : '⬆ 上传文档' }}
+          </button>
+        </div>
+        <input
+          ref="fileInput"
+          type="file"
+          multiple
+          accept=".md,.markdown"
+          hidden
+          @change="onFiles"
+        />
+        <div class="kb-upload-note" v-if="uploadNote">{{ uploadNote }}</div>
         <input v-model="query" class="kb-search" placeholder="搜索文档 ID / 标题" />
         <div class="kb-types">
           <button
