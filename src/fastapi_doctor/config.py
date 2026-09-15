@@ -13,6 +13,7 @@ DATA_DIR = BASE_DIR / "data"
 MARKDOWN_DIR = DATA_DIR / "knowledge" / "markdown"
 PARENT_STORE_PATH = DATA_DIR / "knowledge" / "parents"
 QDRANT_DB_PATH = DATA_DIR / "knowledge" / "qdrant"
+MANIFEST_PATH = DATA_DIR / "knowledge" / "MANIFEST.json"
 
 # Qdrant 只索引用于召回的子块；命中后通过 parent_id 获取上下文更完整的父块。
 CHILD_COLLECTION = "diagnosis_child_chunks"

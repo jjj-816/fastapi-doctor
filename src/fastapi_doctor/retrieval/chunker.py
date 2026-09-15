@@ -63,20 +63,36 @@ class DocumentChunker:
         source_name: str | None = None,
         source_metadata: dict | None = None,
     ) -> tuple[list[tuple[str, object]], list[object]]:
-        """切分一个文档，并确保每个子块都携带来源和 parent_id。"""
+        """切分一个 Markdown 文件。source_name 默认取文件名 stem。"""
         path = Path(markdown_path)
-        parents = self.parent_splitter.split_text(path.read_text(encoding="utf-8"))
+        return self.create_chunks(
+            path.read_text(encoding="utf-8"),
+            source_name=source_name or path.stem,
+            source_metadata=source_metadata,
+        )
+
+    def create_chunks(
+        self,
+        text: str,
+        *,
+        source_name: str,
+        source_metadata: dict | None = None,
+    ) -> tuple[list[tuple[str, object]], list[object]]:
+        """切分 Markdown 文本，并确保每个子块都携带来源和 parent_id。
+
+        source_name 同时决定 parent_id 前缀与 metadata.source，调用方需保证
+        全库唯一；导入器剥掉 frontmatter 后直接传正文，避免落地临时文件。
+        """
+        parents = self.parent_splitter.split_text(text)
         parents = self._merge_small(parents)
         parents = self._split_large(parents)
 
         parent_pairs = []
         child_chunks = []
         for index, parent in enumerate(parents):
-            parent_id = f"{path.stem}_p{index}"
+            parent_id = f"{source_name}_p{index}"
             parent.metadata.update(source_metadata or {})
-            parent.metadata.update(
-                {"source": source_name or path.name, "parent_id": parent_id}
-            )
+            parent.metadata.update({"source": source_name, "parent_id": parent_id})
             parent_pairs.append((parent_id, parent))
             child_chunks.extend(self.child_splitter.split_documents([parent]))
         return parent_pairs, child_chunks

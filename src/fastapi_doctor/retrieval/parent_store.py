@@ -30,6 +30,14 @@ class ParentStore:
                 encoding="utf-8",
             )
 
+    def list_sources(self) -> set[str]:
+        """列出已导入的来源 stem，供导入命令跳过重复来源、保证幂等。"""
+        sources = set()
+        for path in self.store_path.glob("*.json"):
+            match = re.match(r"^(.*)_p\d+$", path.name.removesuffix(".json"))
+            sources.add(match.group(1) if match else path.stem)
+        return sources
+
     def delete_many(self, parent_ids: list[str]) -> None:
         """删除指定父块，供导入失败时回滚已写入的数据。"""
         for parent_id in parent_ids:
