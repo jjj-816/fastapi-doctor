@@ -71,16 +71,26 @@ def test_kb_views_serve_local_content(monkeypatch, tmp_path, make_fake_retriever
         )
     client = make_client(monkeypatch, tmp_path, make_fake_retriever, FakeLLM())
     with client:
+        listing = client.get("/api/kb/docs")
         parent_view = client.get("/api/kb/demo-doc_p0")
         doc_view = client.get("/api/kb/doc/demo-doc")
+        json_view = client.get(
+            "/api/kb/doc/demo-doc", headers={"Accept": "application/json"}
+        )
         missing = client.get("/api/kb/doc/no-such-doc")
 
+    assert [d["doc_id"] for d in listing.json() if d["doc_id"] == "demo-doc"]
+    demo = next(d for d in listing.json() if d["doc_id"] == "demo-doc")
+    assert demo["block_count"] == 2
+    assert demo["title"] == "本地知识库演示文档"
     assert parent_view.status_code == 200
     assert "第一段内容" in parent_view.text
     assert "demo-doc_p0" in parent_view.text
     assert "https://example.com/demo-doc" in parent_view.text  # 仅纯文本溯源，无跳转
     assert doc_view.status_code == 200
     assert "第一段内容" in doc_view.text and "第二段内容" in doc_view.text
+    assert json_view.json()["block_count"] == 2
+    assert "第二段内容" in json_view.json()["content"]
     assert missing.status_code == 404
 
 

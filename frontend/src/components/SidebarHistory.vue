@@ -1,12 +1,13 @@
 <script setup>
-// 侧栏：新诊断按钮 + 历史运行列表（GET /api/runs）。
+// 侧栏：新诊断 / 知识库入口 + 历史运行列表（GET /api/runs）。
 import { STATUS_LABELS } from '../api'
 
 defineProps({
   runs: { type: Array, required: true },
   currentId: { type: String, default: '' },
+  view: { type: String, default: 'chat' },
 })
-const emit = defineEmits(['select', 'new'])
+const emit = defineEmits(['select', 'new', 'kb'])
 
 function timeOf(iso) {
   try {
@@ -24,6 +25,13 @@ function timeOf(iso) {
       <div class="brand-sub">Python Web 服务故障诊断 Agent</div>
     </div>
     <button class="new-chat-btn" @click="emit('new')">＋ 新的诊断</button>
+    <button
+      class="new-chat-btn kb-nav"
+      :class="{ active: view === 'kb' }"
+      @click="emit('kb')"
+    >
+      📚 知识库
+    </button>
     <div class="history-title">历史诊断</div>
     <div class="history-list">
       <button

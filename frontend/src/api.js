@@ -29,6 +29,12 @@ export const api = {
     request(`/runs/${runId}/resume`, { method: 'POST', body: JSON.stringify(payload) }),
   sendFeedback: (runId, payload) =>
     request(`/runs/${runId}/feedback`, { method: 'POST', body: JSON.stringify(payload) }),
+  listKbDocs: () => request('/kb/docs'),
+  // 应用内阅读需要 JSON；默认浏览器导航 Accept 会拿到 HTML 页。
+  getKbDoc: (docId) =>
+    request(`/kb/doc/${encodeURIComponent(docId)}`, {
+      headers: { Accept: 'application/json' },
+    }),
 }
 
 // 后端会出现的全部 SSE 事件名（EventSource 按 event 名分发）。
@@ -92,4 +98,10 @@ export const STATUS_LABELS = {
   needs_clarification: '信息不足',
   completed: '已完成',
   failed: '失败',
+}
+
+export const SOURCE_LABELS = {
+  official_doc: '官方文档',
+  incident_case: '故障案例',
+  runbook: 'Runbook',
 }

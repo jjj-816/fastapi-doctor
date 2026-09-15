@@ -79,6 +79,29 @@ class ParentStore:
             "block_count": len(blocks),
         }
 
+    def list_documents(self) -> list[dict]:
+        """按来源 stem 聚合枚举全部文档，供知识库浏览页展示列表。"""
+        docs: dict[str, list[Path]] = {}
+        for path in self.store_path.glob("*.json"):
+            match = re.match(r"^(.*)_p\d+$", path.stem)
+            doc_id = match.group(1) if match else path.stem
+            docs.setdefault(doc_id, []).append(path)
+        items = []
+        for doc_id, paths in sorted(docs.items()):
+            first = min(paths, key=lambda p: self._sort_key(p.stem))
+            metadata = json.loads(first.read_text(encoding="utf-8")).get("metadata", {})
+            items.append(
+                {
+                    "doc_id": doc_id,
+                    "title": str(metadata.get("title") or doc_id),
+                    "source_type": str(metadata.get("source_type", "")),
+                    "block_count": len(paths),
+                    "components": [str(c) for c in metadata.get("components", [])],
+                    "risk_level": str(metadata.get("risk_level", "")),
+                }
+            )
+        return items
+
     def load_content_many(self, parent_ids: list[str]) -> list[dict]:
         """去重并按父块序号稳定返回多个父块。"""
         return [

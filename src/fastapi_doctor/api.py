@@ -12,8 +12,8 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from uuid import uuid4
 
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from langgraph.types import Command
 
 from fastapi_doctor import config
@@ -259,9 +259,23 @@ def _kb_html(title: str, meta: str, content: str) -> HTMLResponse:
     return HTMLResponse(page)
 
 
+@app.get("/api/kb/docs")
+def list_kb_documents(req: Request) -> list[dict]:
+    """枚举本地知识库全部来源文档，供前端知识库浏览页使用。
+
+    必须先于 /api/kb/{parent_id} 声明，否则 "docs" 会被当作 parent_id。
+    """
+    store: ParentStore = req.app.state.parent_store
+    return store.list_documents()
+
+
 @app.get("/api/kb/doc/{doc_id}")
-def kb_document(doc_id: str, req: Request) -> HTMLResponse:
-    """本地知识库整篇文档视图：参考资料引用的原文查看入口。"""
+def kb_document(doc_id: str, req: Request) -> Response:
+    """本地知识库整篇文档视图：参考资料引用的原文查看入口。
+
+    浏览器导航（Accept: text/html）返回 HTML 页；带 Accept: application/json
+    的程序化请求返回 JSON，供前端应用内阅读。
+    """
     store: ParentStore = req.app.state.parent_store
     try:
         doc = store.load_document(doc_id)
@@ -272,11 +286,21 @@ def kb_document(doc_id: str, req: Request) -> HTMLResponse:
     parts = [doc["doc_id"], f"{doc['block_count']} 个父块"]
     if metadata.get("source_url"):
         parts.append(f"原始来源 {metadata['source_url']}")  # 纯文本展示，不提供跳转
+    payload = {
+        "doc_id": doc["doc_id"],
+        "title": title,
+        "source_type": str(metadata.get("source_type", "")),
+        "source_url": str(metadata.get("source_url", "")),
+        "block_count": doc["block_count"],
+        "content": doc["content"],
+    }
+    if "application/json" in req.headers.get("accept", ""):
+        return JSONResponse(payload)
     return _kb_html(title, " · ".join(parts), doc["content"])
 
 
 @app.get("/api/kb/{parent_id}")
-def kb_parent(parent_id: str, req: Request) -> HTMLResponse:
+def kb_parent(parent_id: str, req: Request) -> Response:
     """本地知识库父块视图：检索证据"查看原文"的落点。"""
     store: ParentStore = req.app.state.parent_store
     try:
@@ -289,6 +313,16 @@ def kb_parent(parent_id: str, req: Request) -> HTMLResponse:
     parts = [block["parent_id"], " -> ".join(headers)]
     if metadata.get("source_url"):
         parts.append(f"原始来源 {metadata['source_url']}")  # 纯文本展示，不提供跳转
+    payload = {
+        "parent_id": block["parent_id"],
+        "title": title,
+        "section": " -> ".join(headers),
+        "source_type": str(metadata.get("source_type", "")),
+        "source_url": str(metadata.get("source_url", "")),
+        "content": block["content"],
+    }
+    if "application/json" in req.headers.get("accept", ""):
+        return JSONResponse(payload)
     return _kb_html(title, " · ".join(part for part in parts if part), block["content"])
 
 

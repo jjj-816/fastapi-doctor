@@ -8,9 +8,11 @@ import ClarifyCard from './components/ClarifyCard.vue'
 import ConfirmCard from './components/ConfirmCard.vue'
 import DiagnosisCard from './components/DiagnosisCard.vue'
 import FeedbackCard from './components/FeedbackCard.vue'
+import KnowledgeBase from './components/KnowledgeBase.vue'
 
 const runs = ref([])
 const current = ref(null) // { id, description, logs, code, config, status, events, result, error }
+const view = ref('chat') // 主区域视图：chat = 诊断对话，kb = 知识库浏览
 const lastSeq = ref(0)
 const supplements = ref([]) // 本次会话里用户补充的内容（用于聊天气泡展示）
 const feedbackDone = ref(false)
@@ -91,6 +93,7 @@ function resetSessionState() {
 }
 
 async function selectRun(run) {
+  view.value = 'chat'
   resetSessionState()
   current.value = {
     id: run.run_id,
@@ -194,16 +197,23 @@ onMounted(refreshRuns)
     <SidebarHistory
       :runs="runs"
       :current-id="current?.id || ''"
+      :view="view"
       @select="selectRun"
+      @kb="view = 'kb'"
       @new="
         () => {
           resetSessionState()
           current = null
+          view = 'chat'
         }
       "
     />
 
     <div class="main">
+      <!-- 知识库浏览 -->
+      <KnowledgeBase v-if="view === 'kb'" />
+
+      <template v-else>
       <div class="chat-scroll" ref="chatScroll">
         <!-- 欢迎页 -->
         <div class="welcome" v-if="!current">
@@ -308,6 +318,7 @@ onMounted(refreshRuns)
         :prefill="prefill"
         @submit="startRun"
       />
+      </template>
     </div>
   </div>
 </template>
