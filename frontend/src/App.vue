@@ -266,10 +266,10 @@ onMounted(refreshRuns)
           </div>
 
           <!-- 用户补充（澄清/确认） -->
-          <template v-for="(text, i) in supplements" :key="i">
+          <div v-for="(text, i) in supplements" :key="i">
             <div class="resume-divider">已补充信息，继续诊断</div>
             <div class="user-bubble" style="white-space: pre-wrap">{{ text }}</div>
-          </template>
+          </div>
 
           <!-- 澄清面板 -->
           <ClarifyCard

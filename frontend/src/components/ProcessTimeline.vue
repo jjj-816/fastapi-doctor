@@ -161,7 +161,7 @@ const view = computed(() =>
         <span class="step-detail-count" v-if="s.details.length">{{ s.open ? '收起' : '展开' }}</span>
       </button>
       <div class="step-body" v-if="s.open && s.details.length">
-        <template v-for="(d, j) in s.details" :key="j">
+        <div v-for="(d, j) in s.details" :key="j">
           <div
             class="detail"
             v-if="d.kind === 'text'"
@@ -174,7 +174,7 @@ const view = computed(() =>
               c.label
             }}</span>
           </div>
-        </template>
+        </div>
       </div>
     </div>
   </div>

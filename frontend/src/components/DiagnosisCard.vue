@@ -77,10 +77,15 @@ function isUrl(text) {
     <div class="report-section" v-if="d.citations?.length">
       <h4>参考资料</h4>
       <div class="cite-list">
-        <template v-for="(c, i) in d.citations" :key="i">
-          <a v-if="isUrl(c)" :href="c" target="_blank" rel="noopener">{{ c }}</a>
-          <a v-else href="javascript:void(0)" style="cursor: default">{{ c }}</a>
-        </template>
+        <a
+          v-for="(c, i) in d.citations"
+          :key="i"
+          :href="isUrl(c) ? c : 'javascript:void(0)'"
+          :target="isUrl(c) ? '_blank' : undefined"
+          :rel="isUrl(c) ? 'noopener' : undefined"
+          :style="isUrl(c) ? undefined : 'cursor: default'"
+          >{{ c }}</a
+        >
       </div>
     </div>
 
