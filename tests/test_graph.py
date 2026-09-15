@@ -63,7 +63,8 @@ def test_missing_context_stops_for_clarification() -> None:
     assert result["status"] == RunStatus.NEEDS_CLARIFICATION
     assert "plan" not in result
     assert "evidence" not in result
-    assert len(result["clarification_questions"]) == 3
+    # 框架是工具前提不再追问，只问组件与日志。
+    assert len(result["clarification_questions"]) == 2
 
 
 TRACEBACK_LOGS = (
@@ -89,6 +90,24 @@ def test_traceback_feeds_queries_and_grade(make_fake_retriever, fake_llm) -> Non
     assert result["grade"].sufficient is True
     assert result.get("retry_count", 0) == 0
     assert result["status"] == RunStatus.COMPLETED
+
+
+def test_log_tail_line_feeds_query_without_traceback(
+    make_fake_retriever, fake_llm
+) -> None:
+    retriever = make_fake_retriever({"cases/case-db.md": CASE_MD})
+    result = invoke_graph(
+        "容器启动正常但宿主机 curl 连接被拒",
+        logs="INFO:     Uvicorn running on http://0.0.0.0:8000\n"
+        "curl: (7) Failed to connect to localhost port 8000: Connection refused",
+        retriever=retriever,
+        llm=fake_llm,
+    )
+
+    # 无异常栈：宽泛词 + 日志尾行关键词精确词。
+    queries = result["plan"].search_queries
+    assert len(queries) == 2
+    assert "connection" in queries[1] and "refused" in queries[1]
 
 
 def test_grade_loop_rewrites_up_to_cap(make_fake_retriever, fake_llm) -> None:

@@ -50,17 +50,23 @@ class KnowledgeRetriever:
                 )
             ]
         )
-        hits = store.similarity_search(query, k=k or self.default_k, filter=source_filter)
-        parent_ids = [
-            hit.metadata["parent_id"]
-            for hit in hits
-            if hit.metadata.get("parent_id")
-        ]
+        hits = store.similarity_search_with_score(
+            query, k=k or self.default_k, filter=source_filter
+        )
+        # 同一父块的多个子块命中时保留最高分（分数用于跨来源合并排序）。
+        scores: dict[str, float] = {}
+        for hit, score in hits:
+            parent_id = hit.metadata.get("parent_id")
+            if parent_id:
+                scores[parent_id] = max(scores.get(parent_id, 0.0), float(score))
         # load_content_many 已按 parent_id 去重并保持稳定顺序。
-        return [
-            Evidence.from_parent(payload)
-            for payload in self.parent_store.load_content_many(parent_ids)
-        ]
+        evidence = []
+        for payload in self.parent_store.load_content_many(list(scores)):
+            item = Evidence.from_parent(payload)
+            item.score = scores.get(item.parent_id, 0.0)
+            evidence.append(item)
+        evidence.sort(key=lambda item: item.score, reverse=True)
+        return evidence
 
     def search_official_docs(self, query: str, k: int | None = None) -> list[Evidence]:
         """search_official_docs：搜索官方技术文档。"""

@@ -30,7 +30,9 @@ def analyze_input(state: DiagnosisState) -> dict:
 
     status_match = re.search(r"\b(4\d\d|5\d\d)\b", text)
     http_status = int(status_match.group(1)) if status_match else None
-    framework = "fastapi" if "fastapi" in text else None
+    # 本工具只诊断 FastAPI 服务，框架是前提而非待问字段；用户描述里
+    # 提不到 "fastapi"（只说 Uvicorn、数据库等）不应触发澄清。
+    framework = "fastapi"
 
     component = None
     if any(token in text for token in ("postgres", "sqlalchemy", "database", "数据库")):
@@ -43,8 +45,6 @@ def analyze_input(state: DiagnosisState) -> dict:
         component = "http_api"
 
     missing_information = []
-    if framework is None:
-        missing_information.append("framework")
     if component is None:
         missing_information.append("component")
     if not state["logs"].strip():
@@ -69,7 +69,6 @@ def analyze_input(state: DiagnosisState) -> dict:
 def clarify_if_needed(state: DiagnosisState) -> dict:
     """把会影响后续诊断的缺失字段转换为具体澄清问题。"""
     questions = {
-        "framework": "这是哪个 Python Web 框架和版本？",
         "component": "故障发生在启动、请求处理、异步任务还是数据库访问阶段？",
         "logs": "请提供完整异常类型和 traceback 的最后 20 行。",
     }
@@ -110,6 +109,10 @@ def plan(state: DiagnosisState) -> dict:
         specific = " ".join(term for term in specific_terms if term)
         if specific and specific not in queries:
             queries.append(specific)
+    else:
+        # 无异常栈时（curl 报错、ValidationError 片段等），日志最后一行通常
+        # 是错误行；取其中的英文关键词追加精确词，补 BM25 的强项。
+        queries = _append_log_tail_query(queries, state["logs"])
 
     plan = InvestigationPlan(
         hypotheses=[f"检查 {fault.component or '应用'} 的输入、配置与运行环境"],
@@ -121,6 +124,26 @@ def plan(state: DiagnosisState) -> dict:
 
 # 每个查询在每个来源类型上召回的子块数；父块去重后证据更少。
 PER_SOURCE_K = 3
+
+# 日志尾行关键词的噪声过滤；截取数量上限防止查询过长。
+_LOG_STOPWORDS = {"the", "and", "with", "for", "from", "error", "info"}
+_LOG_QUERY_MAX_TOKENS = 8
+
+
+def _append_log_tail_query(queries: list[str], logs: str) -> list[str]:
+    """从日志最后一行提取英文关键词，追加一条精确检索词。"""
+    if not logs.strip():
+        return queries
+    last_line = logs.strip().splitlines()[-1].lower()
+    tokens = [
+        token
+        for token in re.findall(r"[a-z0-9][\w.-]{2,}", last_line)
+        if token not in _LOG_STOPWORDS
+    ][:_LOG_QUERY_MAX_TOKENS]
+    log_query = " ".join(tokens)
+    if log_query and log_query not in queries:
+        queries.append(log_query)
+    return queries
 
 
 def route_after_clarification(state: DiagnosisState) -> str:
@@ -134,8 +157,8 @@ def make_retrieve_node(retriever):
     """构建 retrieve 节点；检索器可注入，测试用假实现不依赖 Ollama。
 
     确定性 MVP：对计划中的每个检索词，在三种来源上各召回最多
-    PER_SOURCE_K 条证据，按 parent_id 去重后合并写入状态。
-    后续将由 LLM 规划的查询与证据评分替代。
+    PER_SOURCE_K 条证据，先按 parent_id 再按 doc 去重，按相关度分数
+    降序合并写入状态。后续将由 LLM 规划的查询与证据评分替代。
     """
 
     def retrieve(state: DiagnosisState) -> dict:
@@ -145,9 +168,20 @@ def make_retrieve_node(retriever):
         for query in queries:
             for source_type in SourceType:
                 for evidence in retriever.search(query, source_type, k=PER_SOURCE_K):
-                    merged.setdefault(evidence.parent_id, evidence)
+                    existing = merged.get(evidence.parent_id)
+                    # 同一父块被多个查询/来源命中时保留更高分的那条。
+                    if existing is None or evidence.score > existing.score:
+                        merged[evidence.parent_id] = evidence
+        # doc 级去重：同一文档只留分数最高的父块，避免一个文档占多个
+        # 提示词预算位；随后按相关度降序，8 条预算由最相关证据优先占用。
+        by_doc: dict[str, Evidence] = {}
+        for evidence in merged.values():
+            best = by_doc.get(evidence.doc_id)
+            if best is None or evidence.score > best.score:
+                by_doc[evidence.doc_id] = evidence
+        evidence_list = sorted(by_doc.values(), key=lambda e: e.score, reverse=True)
         return {
-            "evidence": list(merged.values()),
+            "evidence": evidence_list,
             "status": RunStatus.RETRIEVED,
         }
 

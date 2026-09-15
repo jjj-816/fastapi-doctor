@@ -55,6 +55,7 @@ class Evidence(BaseModel):
     doc_id: str
     parent_id: str
     content: str
+    score: float = 0.0
     title: str = ""
     section: str = ""
     source_type: str = ""
