@@ -30,6 +30,7 @@ from fastapi_doctor.domain.models import (
 from fastapi_doctor.graph.builder import build_diagnosis_graph
 from fastapi_doctor.ingestion import IngestionError, KnowledgeImporter, OllamaUnavailableError
 from fastapi_doctor.llm import build_llm
+from fastapi_doctor.pdf_ingest import has_extractable_text, pdf_bytes_to_markdown
 from fastapi_doctor.retrieval.parent_store import ParentStore
 from fastapi_doctor.retrieval.retriever import KnowledgeRetriever
 from fastapi_doctor.runs import STREAM_TERMINAL_EVENTS, RunManager, execute_run
@@ -283,7 +284,7 @@ MAX_UPLOAD_BYTES = 2 * 1024 * 1024
 async def upload_kb_documents(
     req: Request, files: list[UploadFile] = File(...)
 ) -> dict:
-    """上传 Markdown 文档入库：落盘语料目录后复用既有导入流程（幂等）。
+    """上传文档入库：Markdown 直接落盘，PDF 先转 Markdown，再复用既有导入流程。
 
     与运行中的诊断图共享同一检索器（同一份本地 Qdrant 客户端）；
     同名/非法文件在落盘前拒绝，导入结果按 imported/skipped/failed 如实回报。
@@ -297,9 +298,13 @@ async def upload_kb_documents(
     for upload in files:
         name = Path(upload.filename or "").name
         stem = Path(name).stem.lower()
-        if not name.lower().endswith((".md", ".markdown")):
+        suffix = name.lower().rsplit(".", 1)[-1] if "." in name else ""
+        if suffix not in ("md", "markdown", "pdf"):
             rejected.append(
-                {"filename": upload.filename or name, "reason": "仅支持 .md / .markdown"}
+                {
+                    "filename": upload.filename or name,
+                    "reason": "仅支持 .md / .markdown / .pdf",
+                }
             )
         elif stem in existing or stem in batch_stems:
             rejected.append({"filename": name, "reason": "知识库已存在同名文档"})
@@ -307,10 +312,26 @@ async def upload_kb_documents(
             content = await upload.read()
             if len(content) > MAX_UPLOAD_BYTES:
                 rejected.append({"filename": name, "reason": "单文件超过 2MB"})
+                continue
+            if suffix == "pdf":
+                try:
+                    text = pdf_bytes_to_markdown(content)
+                except Exception as exc:
+                    rejected.append(
+                        {"filename": name, "reason": f"PDF 解析失败：{type(exc).__name__}"}
+                    )
+                    continue
+                # 页分隔符之外没有正文，视为无文本层的扫描件。
+                if not has_extractable_text(text):
+                    rejected.append(
+                        {"filename": name, "reason": "PDF 未提取到文本（可能是扫描件）"}
+                    )
+                    continue
+                (markdown_dir / f"{Path(name).stem}.md").write_text(text, encoding="utf-8")
             else:
                 (markdown_dir / name).write_bytes(content)
-                saved.append(name)
-                batch_stems.add(stem)
+            saved.append(name)
+            batch_stems.add(stem)
     empty: dict = {
         "saved": [],
         "rejected": rejected,

@@ -104,7 +104,7 @@ async function openDoc(doc) {
           ref="fileInput"
           type="file"
           multiple
-          accept=".md,.markdown"
+          accept=".md,.markdown,.pdf"
           hidden
           @change="onFiles"
         />

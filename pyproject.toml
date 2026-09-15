@@ -18,6 +18,7 @@ dependencies = [
   "langgraph-checkpoint-sqlite==3.1.1",
   "mmh3==5.3.0",
   "pydantic==2.13.5",
+  "pymupdf4llm==1.28.2",
   "pyyaml>=6,<7",
   "python-dotenv==1.2.3",
   "python-multipart==0.0.32",

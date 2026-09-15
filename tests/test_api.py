@@ -130,12 +130,52 @@ def test_upload_kb_documents(monkeypatch, tmp_path, make_fake_retriever) -> None
 
     result = first.json()
     assert result["imported"] == ["new-case.md"]
-    assert result["rejected"] == [{"filename": "notes.txt", "reason": "仅支持 .md / .markdown"}]
+    assert result["rejected"] == [
+        {"filename": "notes.txt", "reason": "仅支持 .md / .markdown / .pdf"}
+    ]
     assert again.json()["rejected"] == [
         {"filename": "new-case.md", "reason": "知识库已存在同名文档"}
     ]
     uploaded = next(d for d in listing if d["doc_id"] == "new-case")
     assert uploaded["title"] == "新案例"  # 无 frontmatter，回退正文 H1
+
+
+def test_upload_pdf_documents(monkeypatch, tmp_path, make_fake_retriever) -> None:
+    """上传 PDF 自动转 Markdown 入库；无文本层（扫描件）被拒。"""
+    import pymupdf
+
+    def make_pdf(pages: list[list[tuple[int, str]]]) -> bytes:
+        doc = pymupdf.open()
+        for page_texts in pages:
+            page = doc.new_page()
+            y = 90
+            for fontsize, text in page_texts:
+                page.insert_text((72, y), text, fontsize=fontsize)
+                y += fontsize + 14
+        return doc.tobytes()
+
+    good_pdf = make_pdf(
+        [[(20, "PDF Import Head"), (11, "converted body text for chunking test. " * 25)]]
+    )
+    blank_pdf = make_pdf([[]])  # 无文本层，模拟扫描件
+
+    client = make_client(monkeypatch, tmp_path, make_fake_retriever, FakeLLM())
+    with client:
+        resp = client.post(
+            "/api/kb/upload",
+            files=[
+                ("files", ("pdf-doc.pdf", good_pdf, "application/pdf")),
+                ("files", ("blank.pdf", blank_pdf, "application/pdf")),
+            ],
+        )
+        listing = client.get("/api/kb/docs").json()
+
+    result = resp.json()
+    assert result["imported"] == ["pdf-doc.md"]
+    assert result["rejected"] == [
+        {"filename": "blank.pdf", "reason": "PDF 未提取到文本（可能是扫描件）"}
+    ]
+    assert any(d["doc_id"] == "pdf-doc" for d in listing)
 
 
 def test_list_runs_returns_history_newest_first(
