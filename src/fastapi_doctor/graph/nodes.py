@@ -108,8 +108,10 @@ def clarify_if_needed(state: DiagnosisState) -> dict:
     rounds = state.get("clarify_rounds", 0)
 
     if not questions:
+        # 补充信息重新分析后的第二轮经过这里：保留已问过的问题记录，
+        # 不用空列表覆盖；首轮信息齐全时 state 里本就没有问题。
         return {
-            "clarification_questions": [],
+            "clarification_questions": state.get("clarification_questions", []),
             "clarify_rounds": rounds,
             "resumed": False,
             "status": RunStatus.RUNNING,

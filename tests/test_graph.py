@@ -95,6 +95,8 @@ def test_clarification_resume_reanalyzes_and_completes(
     assert resumed["status"] == RunStatus.COMPLETED
     assert resumed["clarify_rounds"] == 1
     assert resumed["fault_info"].component == "database"
+    # 第二轮经过澄清节点（信息已补齐）不得清空第一轮记录的问题。
+    assert len(resumed["clarification_questions"]) == 2
 
 
 def test_traceback_feeds_queries_and_grade(make_fake_retriever, fake_llm) -> None:
