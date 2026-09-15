@@ -6,13 +6,14 @@
 """
 
 import asyncio
+import html
 import json
 from contextlib import asynccontextmanager
 from pathlib import Path
 from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
 from langgraph.types import Command
 
 from fastapi_doctor import config
@@ -28,6 +29,7 @@ from fastapi_doctor.domain.models import (
 )
 from fastapi_doctor.graph.builder import build_diagnosis_graph
 from fastapi_doctor.llm import build_llm
+from fastapi_doctor.retrieval.parent_store import ParentStore
 from fastapi_doctor.retrieval.retriever import KnowledgeRetriever
 from fastapi_doctor.runs import STREAM_TERMINAL_EVENTS, RunManager, execute_run
 from fastapi_doctor.security import mask_secrets
@@ -54,10 +56,12 @@ def _build_graph():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """启动时建运行管理器与图；测试可替换 _build_graph 工厂注入假实现。"""
+    """启动时建运行管理器、图与父块存储；测试可替换 _build_graph 工厂注入假实现。"""
     app.state.run_manager = RunManager(config.APPLICATION_DB_PATH)
     app.state.run_manager.attach_loop(asyncio.get_running_loop())
     app.state.graph = _build_graph()
+    # 显式传参：默认参数在导入时求值，运行时替换 config 路径（测试）不生效。
+    app.state.parent_store = ParentStore(config.PARENT_STORE_PATH)
     yield
     app.state.run_manager.close()
 
@@ -229,6 +233,63 @@ def submit_feedback(run_id: str, request: FeedbackRequest, req: Request) -> dict
         raise HTTPException(status_code=404, detail="运行不存在")
     manager.add_feedback(run_id, request.rating, request.root_cause, request.solution)
     return {"ok": True}
+
+
+_KB_PAGE_CSS = (
+    "body{font-family:system-ui,-apple-system,sans-serif;max-width:860px;"
+    "margin:32px auto;padding:0 16px;line-height:1.7;color:#24292f}"
+    "h1{font-size:20px;margin-bottom:4px}"
+    ".meta{color:#6b7280;font-size:13px;margin-top:0}"
+    "pre{white-space:pre-wrap;word-break:break-word;background:#f6f7f9;"
+    "border:1px solid #e5e7eb;border-radius:8px;padding:16px;font-size:14px}"
+)
+
+
+def _kb_html(title: str, meta: str, content: str) -> HTMLResponse:
+    """渲染本地知识库原文页：内容全部来自本地存储，离线部署同样可用。"""
+    safe_title = html.escape(title)
+    safe_meta = html.escape(meta)
+    page = (
+        '<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">'
+        f"<title>{safe_title} · FastAPI Doctor 知识库</title>"
+        f"<style>{_KB_PAGE_CSS}</style></head><body>"
+        f"<h1>{safe_title}</h1><p class='meta'>{safe_meta}</p>"
+        f"<pre>{html.escape(content)}</pre></body></html>"
+    )
+    return HTMLResponse(page)
+
+
+@app.get("/api/kb/doc/{doc_id}")
+def kb_document(doc_id: str, req: Request) -> HTMLResponse:
+    """本地知识库整篇文档视图：参考资料引用的原文查看入口。"""
+    store: ParentStore = req.app.state.parent_store
+    try:
+        doc = store.load_document(doc_id)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="知识库中不存在该文档")
+    metadata = doc["metadata"]
+    title = str(metadata.get("title") or doc["doc_id"])
+    parts = [doc["doc_id"], f"{doc['block_count']} 个父块"]
+    if metadata.get("source_url"):
+        parts.append(f"原始来源 {metadata['source_url']}")  # 纯文本展示，不提供跳转
+    return _kb_html(title, " · ".join(parts), doc["content"])
+
+
+@app.get("/api/kb/{parent_id}")
+def kb_parent(parent_id: str, req: Request) -> HTMLResponse:
+    """本地知识库父块视图：检索证据"查看原文"的落点。"""
+    store: ParentStore = req.app.state.parent_store
+    try:
+        block = store.load_content(parent_id)
+    except (FileNotFoundError, json.JSONDecodeError, KeyError):
+        raise HTTPException(status_code=404, detail="知识库中不存在该父块")
+    metadata = block["metadata"]
+    title = str(metadata.get("title") or block["parent_id"])
+    headers = [str(metadata[key]) for key in ("H1", "H2", "H3") if metadata.get(key)]
+    parts = [block["parent_id"], " -> ".join(headers)]
+    if metadata.get("source_url"):
+        parts.append(f"原始来源 {metadata['source_url']}")  # 纯文本展示，不提供跳转
+    return _kb_html(title, " · ".join(part for part in parts if part), block["content"])
 
 
 # 构建后的前端（frontend/dist）存在时由本服务托管，演示时无需单独起前端。

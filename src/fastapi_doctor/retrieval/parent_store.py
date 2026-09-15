@@ -62,6 +62,23 @@ class ParentStore:
         match = re.search(r"_(?:parent_|p)(\d+)$", parent_id)
         return int(match.group(1)) if match else 0
 
+    def load_document(self, doc_id: str) -> dict:
+        """按来源 stem 读取整篇文档：全部父块按序拼接，供本地原文视图使用。"""
+        safe_id = Path(doc_id).name.removesuffix(".json")
+        paths = sorted(
+            self.store_path.glob(f"{safe_id}_p*.json"),
+            key=lambda path: self._sort_key(path.stem),
+        )
+        if not paths:
+            raise FileNotFoundError(safe_id)
+        blocks = [json.loads(path.read_text(encoding="utf-8")) for path in paths]
+        return {
+            "doc_id": safe_id,
+            "content": "\n\n".join(block["page_content"] for block in blocks),
+            "metadata": blocks[0]["metadata"],
+            "block_count": len(blocks),
+        }
+
     def load_content_many(self, parent_ids: list[str]) -> list[dict]:
         """去重并按父块序号稳定返回多个父块。"""
         return [

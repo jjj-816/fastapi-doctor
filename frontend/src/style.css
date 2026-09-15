@@ -508,15 +508,23 @@ ol.suggest li {
 .evidence-content {
   font-size: 13px;
   color: var(--text-soft);
-  display: -webkit-box;
-  -webkit-line-clamp: 3;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin-bottom: 8px;
 }
 
 .evidence-item a {
   color: var(--accent);
   text-decoration: none;
+}
+
+.evidence-item .kb-link {
+  display: inline-block;
+  font-size: 13px;
+}
+
+.evidence-item .kb-link:hover {
+  text-decoration: underline;
 }
 
 /* ---------- 澄清与确认 ---------- */

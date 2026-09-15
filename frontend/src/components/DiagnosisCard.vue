@@ -80,10 +80,9 @@ function isUrl(text) {
         <a
           v-for="(c, i) in d.citations"
           :key="i"
-          :href="isUrl(c) ? c : 'javascript:void(0)'"
-          :target="isUrl(c) ? '_blank' : undefined"
-          :rel="isUrl(c) ? 'noopener' : undefined"
-          :style="isUrl(c) ? undefined : 'cursor: default'"
+          :href="isUrl(c) ? undefined : `/api/kb/doc/${c}`"
+          :target="isUrl(c) ? undefined : '_blank'"
+          :style="isUrl(c) ? 'cursor: default; opacity: 0.7' : ''"
           >{{ c }}</a
         >
       </div>
@@ -96,19 +95,13 @@ function isUrl(text) {
           <div class="evidence-meta" style="display: inline-flex">
             <span class="chip">{{ SOURCE_LABELS[e.source_type] || e.source_type }}</span>
             <span>{{ e.doc_id }}</span>
-            <a
-              v-if="e.source_url"
-              :href="e.source_url"
-              target="_blank"
-              rel="noopener"
-              @click.stop
-              style="color: var(--accent); text-decoration: none"
-              >来源链接</a
-            >
           </div>
         </summary>
         <div class="evidence-title" v-if="e.title || e.section">{{ e.title || e.section }}</div>
         <div class="evidence-content">{{ e.content }}</div>
+        <a class="kb-link" :href="`/api/kb/${e.parent_id}`" target="_blank" rel="noopener"
+          >在知识库中查看原文 ↗</a
+        >
       </details>
     </div>
   </div>

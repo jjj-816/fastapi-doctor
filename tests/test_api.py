@@ -1,8 +1,9 @@
 """HTTP 接口测试（设计 §8.1）：注入假检索器与假 LLM，不依赖真实索引。
 
-覆盖：创建任务、轮询状态、SSE 事件顺序、澄清恢复、危险确认、反馈。
+覆盖：创建任务、轮询状态、SSE 事件顺序、澄清恢复、危险确认、反馈、知识库视图。
 """
 
+import json
 import time
 
 import pytest
@@ -31,6 +32,7 @@ def make_client(monkeypatch, tmp_path, make_fake_retriever, llm: FakeLLM):
     monkeypatch.setattr(
         "fastapi_doctor.config.APPLICATION_DB_PATH", tmp_path / "application.db"
     )
+    monkeypatch.setattr("fastapi_doctor.config.PARENT_STORE_PATH", tmp_path / "parents")
     return TestClient(api.app)
 
 
@@ -50,6 +52,36 @@ def test_health() -> None:
         response = client.get("/api/health")
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
+
+
+def test_kb_views_serve_local_content(monkeypatch, tmp_path, make_fake_retriever) -> None:
+    """证据/引用的原文查看走本地知识库接口，不依赖外部网页跳转。"""
+    store_dir = tmp_path / "parents"
+    store_dir.mkdir(parents=True)
+    metadata = {
+        "title": "本地知识库演示文档",
+        "source": "demo-doc",
+        "source_type": "incident_case",
+        "source_url": "https://example.com/demo-doc",
+    }
+    for i, text in enumerate(["第一段内容", "第二段内容"]):
+        (store_dir / f"demo-doc_p{i}.json").write_text(
+            json.dumps({"page_content": text, "metadata": metadata}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+    client = make_client(monkeypatch, tmp_path, make_fake_retriever, FakeLLM())
+    with client:
+        parent_view = client.get("/api/kb/demo-doc_p0")
+        doc_view = client.get("/api/kb/doc/demo-doc")
+        missing = client.get("/api/kb/doc/no-such-doc")
+
+    assert parent_view.status_code == 200
+    assert "第一段内容" in parent_view.text
+    assert "demo-doc_p0" in parent_view.text
+    assert "https://example.com/demo-doc" in parent_view.text  # 仅纯文本溯源，无跳转
+    assert doc_view.status_code == 200
+    assert "第一段内容" in doc_view.text and "第二段内容" in doc_view.text
+    assert missing.status_code == 404
 
 
 def test_list_runs_returns_history_newest_first(
