@@ -17,6 +17,7 @@ const feedbackDone = ref(false)
 const actionBusy = ref(false)
 const chatScroll = ref(null)
 const prefill = ref(null)
+const es = ref(null) // 当前 SSE 流的 EventSource 句柄
 
 const clarifyEvent = computed(() =>
   [...(current.value?.events || [])].reverse().find((e) => e.type === 'clarification_required')
