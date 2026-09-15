@@ -1,0 +1,2 @@
+"""FastAPI Doctor package."""
+
