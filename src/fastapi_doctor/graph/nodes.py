@@ -6,7 +6,13 @@
 
 import re
 
-from fastapi_doctor.domain.models import FaultInfo, InvestigationPlan, RunStatus
+from fastapi_doctor.domain.models import (
+    Evidence,
+    FaultInfo,
+    InvestigationPlan,
+    RunStatus,
+    SourceType,
+)
 from fastapi_doctor.graph.state import DiagnosisState
 
 
@@ -92,3 +98,31 @@ def route_after_clarification(state: DiagnosisState) -> str:
     if state["status"] == RunStatus.NEEDS_CLARIFICATION:
         return "end"
     return "plan"
+
+
+# 每个查询在每个来源类型上召回的子块数；父块去重后证据更少。
+PER_SOURCE_K = 3
+
+
+def make_retrieve_node(retriever):
+    """构建 retrieve 节点；检索器可注入，测试用假实现不依赖 Ollama。
+
+    确定性 MVP：对计划中的每个检索词，在三种来源上各召回最多
+    PER_SOURCE_K 条证据，按 parent_id 去重后合并写入状态。
+    后续将由 LLM 规划的查询与证据评分替代。
+    """
+
+    def retrieve(state: DiagnosisState) -> dict:
+        plan = state["plan"]
+        queries = plan.search_queries or [""]
+        merged: dict[str, Evidence] = {}
+        for query in queries:
+            for source_type in SourceType:
+                for evidence in retriever.search(query, source_type, k=PER_SOURCE_K):
+                    merged.setdefault(evidence.parent_id, evidence)
+        return {
+            "evidence": list(merged.values()),
+            "status": RunStatus.RETRIEVED,
+        }
+
+    return retrieve

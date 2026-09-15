@@ -14,9 +14,10 @@ from fastapi_doctor.domain.models import (
     RunStatus,
 )
 from fastapi_doctor.graph.builder import build_diagnosis_graph
+from fastapi_doctor.retrieval.retriever import KnowledgeRetriever
 
 app = FastAPI(title="FastAPI Doctor", version="0.1.0")
-graph = build_diagnosis_graph()
+graph = build_diagnosis_graph(retriever=KnowledgeRetriever())
 
 
 @app.get("/api/health")
@@ -27,7 +28,7 @@ def health() -> dict[str, str]:
 
 @app.post("/api/diagnose", response_model=DiagnosisResponse)
 def diagnose(request: DiagnosisRequest) -> DiagnosisResponse:
-    """运行一次最小诊断图，并返回输入分析或调查计划。"""
+    """运行一次最小诊断图，并返回输入分析、调查计划与分源检索证据。"""
     result = graph.invoke(
         {
             "run_id": str(uuid4()),

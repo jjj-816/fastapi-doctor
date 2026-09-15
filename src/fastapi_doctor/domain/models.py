@@ -15,7 +15,16 @@ class RunStatus(StrEnum):
     RUNNING = "running"
     NEEDS_CLARIFICATION = "needs_clarification"
     PLANNED = "planned"
+    RETRIEVED = "retrieved"
     FAILED = "failed"
+
+
+class SourceType(StrEnum):
+    """知识库三种来源类型，与导入时的 metadata.source_type 一致。"""
+
+    OFFICIAL_DOC = "official_doc"
+    INCIDENT_CASE = "incident_case"
+    RUNBOOK = "runbook"
 
 
 class FaultInfo(BaseModel):
@@ -37,6 +46,56 @@ class InvestigationPlan(BaseModel):
     verification_steps: list[str] = Field(default_factory=list)
 
 
+class Evidence(BaseModel):
+    """一条检索证据：子块命中后扩展出的父块级上下文（§5.2）。"""
+
+    doc_id: str
+    parent_id: str
+    content: str
+    title: str = ""
+    section: str = ""
+    source_type: str = ""
+    components: list[str] = Field(default_factory=list)
+    error_types: list[str] = Field(default_factory=list)
+    risk_level: str = ""
+    applies_to: str = ""
+    source_url: str = ""
+
+    @classmethod
+    def from_parent(cls, payload: dict) -> "Evidence":
+        """从 ParentStore.load_content 的返回构造证据。"""
+        metadata = payload.get("metadata", {})
+        headers = [
+            str(metadata[key])
+            for key in ("H1", "H2", "H3")
+            if metadata.get(key)
+        ]
+        return cls(
+            doc_id=str(metadata.get("source", "")),
+            parent_id=payload.get("parent_id", ""),
+            content=payload.get("content", ""),
+            title=str(metadata.get("title", "")),
+            section=" -> ".join(headers),
+            source_type=str(metadata.get("source_type", "")),
+            components=[str(item) for item in metadata.get("components", [])],
+            error_types=[str(item) for item in metadata.get("error_types", [])],
+            risk_level=str(metadata.get("risk_level", "")),
+            applies_to=str(metadata.get("applies_to", "")),
+            source_url=str(metadata.get("source_url", "")),
+        )
+
+
+class TracebackInfo(BaseModel):
+    """analyze_traceback 提取的结构化异常信息（§4.4）。"""
+
+    exception_chain: list[str] = Field(default_factory=list)
+    root_exception: str | None = None
+    root_message: str = ""
+    files: list[str] = Field(default_factory=list)
+    line_numbers: list[int] = Field(default_factory=list)
+    key_error_strings: list[str] = Field(default_factory=list)
+
+
 class DiagnosisRequest(BaseModel):
     """用户提交的原始故障材料，并在 API 边界限制各字段大小。"""
 
@@ -54,3 +113,4 @@ class DiagnosisResponse(BaseModel):
     fault_info: FaultInfo
     clarification_questions: list[str]
     plan: InvestigationPlan | None = None
+    evidence: list[Evidence] = Field(default_factory=list)
