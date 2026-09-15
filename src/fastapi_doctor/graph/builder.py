@@ -14,8 +14,8 @@ from langgraph.graph import END, START, StateGraph
 from fastapi_doctor.graph.nodes import (
     analyze_input,
     clarify_if_needed,
-    grade_evidence,
     make_diagnose_node,
+    make_grade_node,
     make_retrieve_node,
     plan,
     rewrite_query,
@@ -44,7 +44,7 @@ def build_diagnosis_graph(
     builder.add_node("clarify_if_needed", clarify_if_needed)
     builder.add_node("plan", plan)
     builder.add_node("retrieve", make_retrieve_node(retriever or KnowledgeRetriever()))
-    builder.add_node("grade_evidence", grade_evidence)
+    builder.add_node("grade_evidence", make_grade_node(llm))
     builder.add_node("rewrite_query", rewrite_query)
     builder.add_node("diagnose", make_diagnose_node(llm))
     builder.add_node("review", review)

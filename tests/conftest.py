@@ -3,7 +3,7 @@
 import pytest
 from langchain_core.embeddings import DeterministicFakeEmbedding
 
-from fastapi_doctor.domain.models import DiagnosisReport
+from fastapi_doctor.domain.models import DiagnosisReport, EvidenceGrade
 from fastapi_doctor.ingestion import KnowledgeImporter
 from fastapi_doctor.retrieval.parent_store import ParentStore
 from fastapi_doctor.retrieval.retriever import KnowledgeRetriever
@@ -94,26 +94,44 @@ def make_fake_retriever(tmp_path):
 
 
 class FakeLLM:
-    """假 LLM：with_structured_output 直接返回预置报告，不发任何网络请求。"""
+    """假 LLM：按 schema 返回预置报告/评分，不发任何网络请求。"""
 
-    def __init__(self, report: DiagnosisReport | None = None):
+    def __init__(
+        self,
+        report: DiagnosisReport | None = None,
+        grade: EvidenceGrade | None = None,
+        grade_error: Exception | None = None,
+        reports: list[DiagnosisReport] | None = None,
+    ):
         self.report = report or DiagnosisReport(
             most_likely_cause="容器内 localhost 指向容器自身，数据库不可达",
             confidence=0.85,
             supporting_evidence=["case-db_p0"],
-            investigation_steps=["进入容器检查连接串主机名"],
+            investigation_steps=["引用证据时只填 parent_id"],
             fix_suggestions=["把连接串中的 localhost 改为 compose 服务名"],
             verification=["重启应用后访问 /health"],
             alternative_causes=["数据库服务未启动"],
             citations=["https://example.com/case"],
         )
+        self.grade = grade or EvidenceGrade(sufficient=True, reason="假评分：默认足够")
+        self.grade_error = grade_error
+        # 按次弹出诊断结果（测引用自检重试）；用尽后回落到固定 report。
+        self._reports = list(reports) if reports else None
+        self._schema = None
         self.prompts: list[str] = []
 
     def with_structured_output(self, schema, method=None):
+        self._schema = schema
         return self
 
     def invoke(self, prompt):
         self.prompts.append(prompt)
+        if self._schema is EvidenceGrade:
+            if self.grade_error is not None:
+                raise self.grade_error
+            return self.grade
+        if self._reports:
+            return self._reports.pop(0)
         return self.report
 
 

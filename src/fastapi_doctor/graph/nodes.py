@@ -1,7 +1,8 @@
-"""最小诊断图的节点实现。
+"""诊断图的节点实现。
 
-这些规则节点是开发第一阶段的确定性实现，用来先跑通状态变化和条件路由；
-它们不是最终智能诊断逻辑。后续会逐步替换为经过 Pydantic 校验的模型输出。
+确定性规则节点（分析、澄清、规划、重写、审查）与 LLM 节点（证据评分、
+诊断）并存：模型输出经 Pydantic 校验，LLM 未注入或调用失败时回退规则
+实现，保证流水线不因单次模型调用中断。
 """
 
 import re
@@ -39,6 +40,20 @@ def _emit(event_type: str, payload: dict) -> None:
     sink = configurable.get("event_sink")
     if callable(sink):
         sink({"type": event_type, "payload": payload})
+
+
+def _invoke_structured(llm, schema, prompt):
+    """调 LLM 取经 Pydantic 校验的结构化输出。
+
+    GLM/DeepSeek 等 OpenAI 兼容服务对 json_schema 的服务端约束不严格，
+    模型会用 ```json 围栏输出导致严格解析失败；这类服务改走 function
+    calling，从 tool_call 参数取结构化结果。本地 Ollama 用默认即可。
+    """
+    if type(llm).__module__.startswith("langchain_openai"):
+        structured = llm.with_structured_output(schema, method="function_calling")
+    else:
+        structured = llm.with_structured_output(schema)
+    return structured.invoke(prompt)
 
 
 def analyze_input(state: DiagnosisState) -> dict:
@@ -274,58 +289,127 @@ def _grade_needles(traceback_info: TracebackInfo) -> list[str]:
     return list(dict.fromkeys([class_name.lower(), *(t.lower() for t in tokens)]))
 
 
-def grade_evidence(state: DiagnosisState) -> dict:
-    """确定性证据评分：证据非空，且包含异常关键字时视为足够。
+def _rule_based_grade(state: DiagnosisState) -> EvidenceGrade:
+    """规则版证据评分：证据非空，且包含异常关键字时视为足够。
 
-    日志中没有可校验的异常关键字时默认采信检索结果；本节点是 §4.5
-    LLM Evidence Grader 到位前的规则版替身。
+    日志中没有可校验的异常关键字时默认采信检索结果；作为 LLM 评分
+    失败或未注入 LLM 时的回退实现。
     """
     evidence = state.get("evidence", [])
     traceback_info = state.get("traceback_info") or TracebackInfo()
     needles = _grade_needles(traceback_info)
 
     if not evidence:
-        grade = EvidenceGrade(
+        return EvidenceGrade(
             sufficient=False,
             reason="未检索到任何证据",
             missing_terms=needles[:3],
         )
-    elif not needles:
-        grade = EvidenceGrade(
+    if not needles:
+        return EvidenceGrade(
             sufficient=True,
             reason="日志中无可校验的异常关键字，默认采信检索结果",
         )
-    else:
-        contents = [item.content.lower() for item in evidence]
-        matched = [
-            needle
-            for needle in needles
-            if any(needle in content for content in contents)
-        ]
-        if matched:
-            grade = EvidenceGrade(
-                sufficient=True,
-                reason=f"证据包含关键错误信息：{matched[:3]}",
-            )
-        else:
-            grade = EvidenceGrade(
-                sufficient=False,
-                reason="证据未包含异常关键字",
-                missing_terms=needles[:3],
-            )
-    _emit("evidence_graded", grade.model_dump())
-    return {"grade": grade}
+    contents = [item.content.lower() for item in evidence]
+    matched = [
+        needle
+        for needle in needles
+        if any(needle in content for content in contents)
+    ]
+    if matched:
+        return EvidenceGrade(
+            sufficient=True,
+            reason=f"证据包含关键错误信息：{matched[:3]}",
+        )
+    return EvidenceGrade(
+        sufficient=False,
+        reason="证据未包含异常关键字",
+        missing_terms=needles[:3],
+    )
+
+
+def build_grade_prompt(state: DiagnosisState) -> str:
+    """组装证据评分提示词（§4.5）：相关性、来源可信度、环境匹配、假设支撑。"""
+    fault = state["fault_info"]
+    evidence = state.get("evidence", [])[: config.MAX_EVIDENCE_ITEMS]
+    blocks = []
+    for item in evidence:
+        content = item.content[: config.MAX_EVIDENCE_CHARS]
+        blocks.append(
+            f"[证据 {item.parent_id}] doc_id={item.doc_id} 类型={item.source_type}"
+            f" 标题={item.title or item.section}\n{content}"
+        )
+    evidence_text = "\n\n".join(blocks) or "（无检索证据）"
+
+    return (
+        "你是一名检索证据评审员。请依据以下四个维度判断证据是否足以支撑"
+        "本次故障诊断：\n"
+        "1) 相关性：证据内容是否与故障症状和异常直接相关；\n"
+        "2) 来源可信度：故障案例与 Runbook 优先于一般教程；\n"
+        "3) 环境匹配：证据描述的运行环境（容器、数据库、部署方式等）"
+        "是否与故障环境一致；\n"
+        "4) 假设支撑：证据是否覆盖诊断假设所需的关键错误信息。\n\n"
+        f"## 故障信息\n"
+        f"- 框架: {fault.framework or '未知'}\n"
+        f"- 组件: {fault.component or '未知'}\n"
+        f"- 异常类型: {fault.exception_type or '未知'}\n"
+        f"- HTTP 状态码: {fault.http_status or '未知'}\n"
+        f"- 症状: {state['description'][:500] or '（无）'}\n"
+        f"- 日志末尾: {state['logs'][:500] or '（无）'}\n\n"
+        f"## 诊断假设\n"
+        + "\n".join(f"- {h}" for h in state["plan"].hypotheses)
+        + f"\n\n## 检索证据\n{evidence_text}\n\n"
+        "请用中文输出 JSON，字段为：sufficient（布尔值，证据是否足够）、"
+        "reason（一两句判断理由）、missing_terms（字符串列表：证据缺失的"
+        "关键信息，给具体的名词或关键词，禁止整句话；足够时给空列表）。"
+    )
+
+
+def make_grade_node(llm):
+    """构建证据评分节点（§5.4 的 LLM Evidence Grader）。
+
+    llm 为 None 或评分调用失败时回退规则版评分，保证回路不中断；
+    评分给出的 missing_terms 会传给 rewrite_query 改写检索词。
+    """
+
+    def grade_evidence(state: DiagnosisState) -> dict:
+        _emit("node_started", {"node": "grade_evidence"})
+        grade = None
+        if llm is not None:
+            try:
+                grade = _invoke_structured(
+                    llm, EvidenceGrade, build_grade_prompt(state)
+                )
+            except Exception:  # 单次评分失败不阻塞诊断流水线
+                grade = None
+        if grade is None:
+            grade = _rule_based_grade(state)
+        _emit("evidence_graded", grade.model_dump())
+        return {"grade": grade}
+
+    return grade_evidence
 
 
 def rewrite_query(state: DiagnosisState) -> dict:
-    """把证据中未命中的异常关键字并入新检索词后重试（上限见 config）。"""
+    """按评分缺失项改写检索词后重试（上限见 config）。"""
     _emit("node_started", {"node": "rewrite_query"})
     fault = state["fault_info"]
     traceback_info = state.get("traceback_info") or TracebackInfo()
     retry_count = state.get("retry_count", 0) + 1
 
     contents = "\n".join(item.content.lower() for item in state.get("evidence", []))
-    missing = [term for term in _grade_needles(traceback_info) if term not in contents]
+    # 优先用评分给出的缺失关键词（§4.5：按失败原因改写）；评分器没给
+    # 时退回规则推导的异常关键字。
+    grade = state.get("grade")
+    missing = [
+        term
+        for term in (grade.missing_terms if grade else [])
+        if term and term.lower() not in contents
+    ]
+    if not missing:
+        missing = [
+            term for term in _grade_needles(traceback_info) if term not in contents
+        ]
     if not missing:
         missing = [fault.component or fault.framework or "故障"]
 
@@ -356,6 +440,8 @@ def build_diagnosis_prompt(state: DiagnosisState) -> str:
             f" 标题={item.title or item.section}\n{content}"
         )
     evidence_text = "\n\n".join(evidence_blocks) or "（无检索证据）"
+    parent_ids = [item.parent_id for item in evidence]
+    doc_ids = sorted({item.doc_id for item in evidence})
 
     return (
         "你是一名 Python Web 服务故障诊断专家。请只依据给定证据给出诊断，"
@@ -370,11 +456,14 @@ def build_diagnosis_prompt(state: DiagnosisState) -> str:
         f"## 检索证据\n{evidence_text}\n\n"
         "请用中文输出 JSON，字段为：most_likely_cause（最可能原因）、"
         "confidence（0 到 1 的小数）、"
-        "supporting_evidence（引用证据时只填证据块方括号里的 parent_id，"
-        "例如 case-db_p0，禁止复制整行来源信息）、"
+        "supporting_evidence（引用证据时只填证据块方括号里的 parent_id）、"
         "investigation_steps（排查步骤）、fix_suggestions（修复建议）、"
         "verification（验证方法）、alternative_causes（替代原因）、"
-        "citations（参考资料列表，只填证据块的来源 URL 或 doc_id，禁止整段复制）。"
+        "citations（参考资料列表，只填证据块的来源 URL 或 doc_id）。\n"
+        "supporting_evidence 只能从以下 parent_id 列表选取，citations 只能"
+        "从以下 doc_id 列表选取，禁止编造列表之外的 id：\n"
+        f"parent_id: {', '.join(parent_ids) or '（无）'}\n"
+        f"doc_id: {', '.join(doc_ids) or '（无）'}"
     )
 
 
@@ -383,16 +472,29 @@ def make_diagnose_node(llm):
 
     def diagnose(state: DiagnosisState) -> dict:
         _emit("node_started", {"node": "diagnose"})
-        # GLM/DeepSeek 等 OpenAI 兼容服务对 json_schema 的服务端约束不严格，
-        # 模型会用 ```json 围栏输出导致严格解析失败；这类服务改走 function
-        # calling，从 tool_call 参数取结构化结果。本地 Ollama 用默认即可。
-        if type(llm).__module__.startswith("langchain_openai"):
-            structured = llm.with_structured_output(
-                DiagnosisReport, method="function_calling"
+        prompt = build_diagnosis_prompt(state)
+        report = _invoke_structured(llm, DiagnosisReport, prompt)
+
+        # 引用自检（§4.6 审查前移）：引用了未检索到的证据 id 时，把问题
+        # 喂回模型重试一次；仍失败则交由 review 节点如实标注。citations
+        # 允许填 URL，因此只自检 supporting_evidence。
+        evidence = state.get("evidence", [])
+        valid_ids = {item.parent_id for item in evidence} | {
+            item.doc_id for item in evidence
+        }
+        unknown = sorted(set(report.supporting_evidence) - valid_ids)
+        if unknown and llm is not None:
+            _emit("diagnosis_retried", {"unknown_citations": unknown})
+            retry_prompt = (
+                f"你刚才的诊断引用了未检索到的证据 id：{unknown}。"
+                "请只依据原始材料重新输出完整 JSON，所有 supporting_evidence"
+                " 必须从合法 parent_id 列表中选取。\n\n" + prompt
             )
-        else:
-            structured = llm.with_structured_output(DiagnosisReport)
-        report = structured.invoke(build_diagnosis_prompt(state))
+            try:
+                report = _invoke_structured(llm, DiagnosisReport, retry_prompt)
+            except Exception:  # 重试失败时保留首次结果，交给 review 标注
+                pass
+
         _emit(
             "diagnosis_generated",
             {

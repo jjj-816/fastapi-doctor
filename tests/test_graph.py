@@ -6,7 +6,7 @@
 
 from langgraph.types import Command
 
-from fastapi_doctor.domain.models import DiagnosisReport, RunStatus
+from fastapi_doctor.domain.models import DiagnosisReport, EvidenceGrade, RunStatus
 from fastapi_doctor.graph.builder import build_diagnosis_graph
 from tests.conftest import CASE_MD, FakeLLM
 
@@ -137,43 +137,94 @@ def test_log_tail_line_feeds_query_without_traceback(
     assert "connection" in queries[1] and "refused" in queries[1]
 
 
-def test_grade_loop_rewrites_up_to_cap(make_fake_retriever, fake_llm) -> None:
+def test_grade_loop_rewrites_up_to_cap(make_fake_retriever) -> None:
+    llm = FakeLLM(
+        grade=EvidenceGrade(
+            sufficient=False,
+            reason="证据未覆盖连接池耗尽的关键信息",
+            missing_terms=["operationalerror", "connection"],
+        )
+    )
     graph = build(
         retriever=make_fake_retriever(
             {"docs/quickstart.md": "# Quickstart\n\nFastAPI basics. " * 20}
         ),
-        llm=fake_llm,
+        llm=llm,
     )
     result = graph.invoke({**INPUT, "logs": TRACEBACK_LOGS}, CONFIG)
 
-    # 语料中没有任何异常关键字：评分不足，重写两轮后到达上限。
+    # LLM 评分不足：重写词用评分缺失项，重写两轮后到达上限。
     assert result["grade"].sufficient is False
     assert result["retry_count"] == 2
-    # 重写词 = 组件 + 未命中的前两个异常关键字。
+    # 重写词 = 组件 + 评分缺失项的前两个。
     assert result["plan"].search_queries == ["database operationalerror connection"]
     # 证据不足也不阻塞诊断，但结论必须经过审查。
     assert result["status"] == RunStatus.COMPLETED
     assert result["review"].passed is False
 
 
-def test_review_flags_unknown_citation(make_fake_retriever) -> None:
+def test_grade_llm_failure_falls_back_to_rules(make_fake_retriever) -> None:
     graph = build(
         retriever=make_fake_retriever({"cases/case-db.md": CASE_MD}),
-        llm=FakeLLM(
-            report=DiagnosisReport(
-                most_likely_cause="连接池配置错误",
-                confidence=0.9,
-                supporting_evidence=["不存在的证据_p0"],
-                fix_suggestions=["调大 pool_size"],
-            )
-        ),
+        llm=FakeLLM(grade_error=RuntimeError("grader unavailable")),
+    )
+    result = graph.invoke({**INPUT, "logs": TRACEBACK_LOGS}, CONFIG)
+
+    # LLM 评分失败回退规则版：证据含异常关键字 → 足够，不重写。
+    assert result["grade"].sufficient is True
+    assert result.get("retry_count", 0) == 0
+    assert result["status"] == RunStatus.COMPLETED
+
+
+def test_review_flags_unknown_citation(make_fake_retriever) -> None:
+    bad = DiagnosisReport(
+        most_likely_cause="连接池配置错误",
+        confidence=0.9,
+        supporting_evidence=["不存在的证据_p0"],
+        fix_suggestions=["调大 pool_size"],
+    )
+    graph = build(
+        retriever=make_fake_retriever({"cases/case-db.md": CASE_MD}),
+        llm=FakeLLM(reports=[bad, bad]),
     )
     result = graph.invoke(
         {**INPUT, "logs": "sqlalchemy OperationalError connection refused"}, CONFIG
     )
 
+    # 重试后仍引用无效 id：review 如实标注（重试不是洗白）。
     assert result["review"].passed is False
     assert any("不存在" in issue for issue in result["review"].issues)
+    assert result["status"] == RunStatus.COMPLETED
+
+
+def test_diagnose_retries_once_on_invalid_citation(make_fake_retriever) -> None:
+    bad = DiagnosisReport(
+        most_likely_cause="连接池配置错误",
+        confidence=0.9,
+        supporting_evidence=["不存在的证据_p0"],
+        fix_suggestions=["调大 pool_size"],
+    )
+    good = DiagnosisReport(
+        most_likely_cause="容器内 localhost 指向容器自身",
+        confidence=0.85,
+        supporting_evidence=["case-db_p0"],
+        fix_suggestions=["把 localhost 改为 compose 服务名"],
+        citations=["case-db"],
+    )
+    llm = FakeLLM(reports=[bad, good])
+    graph = build(
+        retriever=make_fake_retriever({"cases/case-db.md": CASE_MD}), llm=llm
+    )
+    result = graph.invoke(
+        {**INPUT, "logs": TRACEBACK_LOGS}, CONFIG
+    )
+
+    # 重试一次后引用合法：review 通过，诊断采用第二次输出。
+    # prompts = [评分, 首次诊断, 重试诊断]。
+    assert len(llm.prompts) == 3
+    assert "未检索到的证据 id" in llm.prompts[-1]
+    assert result["diagnosis"].supporting_evidence == ["case-db_p0"]
+    assert result["review"].passed is True
     assert result["status"] == RunStatus.COMPLETED
 
 
