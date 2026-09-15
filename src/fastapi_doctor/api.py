@@ -8,6 +8,7 @@
 import asyncio
 import json
 from contextlib import asynccontextmanager
+from pathlib import Path
 from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, Request
@@ -23,6 +24,7 @@ from fastapi_doctor.domain.models import (
     RunResumeRequest,
     RunSnapshot,
     RunStatus,
+    RunSummary,
 )
 from fastapi_doctor.graph.builder import build_diagnosis_graph
 from fastapi_doctor.llm import build_llm
@@ -67,6 +69,14 @@ app = FastAPI(title="FastAPI Doctor", version="0.2.0", lifespan=lifespan)
 def health() -> dict[str, str]:
     """供本地检查或部署探针确认进程能够正常响应。"""
     return {"status": "ok"}
+
+
+@app.get("/api/runs", response_model=list[RunSummary])
+def list_runs(req: Request, limit: int = 50) -> list[RunSummary]:
+    """列出最近运行（前端侧栏历史），按创建时间倒序。"""
+    manager: RunManager = req.app.state.run_manager
+    limit = min(max(limit, 1), 100)
+    return [RunSummary(**row) for row in manager.list_runs(limit)]
 
 
 @app.post("/api/runs", response_model=RunCreated, status_code=201)
@@ -219,3 +229,11 @@ def submit_feedback(run_id: str, request: FeedbackRequest, req: Request) -> dict
         raise HTTPException(status_code=404, detail="运行不存在")
     manager.add_feedback(run_id, request.rating, request.root_cause, request.solution)
     return {"ok": True}
+
+
+# 构建后的前端（frontend/dist）存在时由本服务托管，演示时无需单独起前端。
+_dist_dir = Path(__file__).resolve().parents[2] / "frontend" / "dist"
+if _dist_dir.is_dir():
+    from fastapi.staticfiles import StaticFiles
+
+    app.mount("/", StaticFiles(directory=_dist_dir, html=True), name="frontend")

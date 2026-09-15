@@ -6,4 +6,6 @@ __pycache__/
 data/
 tmp/
 output/
+frontend/node_modules/
+frontend/dist/
 

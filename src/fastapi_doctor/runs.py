@@ -131,6 +131,28 @@ class RunManager:
             "updated_at": row[7],
         }
 
+    def list_runs(self, limit: int = 50) -> list[dict]:
+        """按创建时间倒序列出运行摘要（前端侧栏历史用）。"""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT run_id, thread_id, description, status, error,"
+                " created_at, updated_at FROM runs"
+                " ORDER BY created_at DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [
+            {
+                "run_id": row[0],
+                "thread_id": row[1],
+                "description": row[2],
+                "status": row[3],
+                "error": row[4],
+                "created_at": row[5],
+                "updated_at": row[6],
+            }
+            for row in rows
+        ]
+
     # --- 事件 ---
 
     def emit(self, run_id: str, event_type: str, payload: dict) -> None:

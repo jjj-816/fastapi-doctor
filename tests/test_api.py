@@ -52,6 +52,30 @@ def test_health() -> None:
     assert response.json() == {"status": "ok"}
 
 
+def test_list_runs_returns_history_newest_first(
+    monkeypatch, tmp_path, make_fake_retriever
+) -> None:
+    client = make_client(monkeypatch, tmp_path, make_fake_retriever, FakeLLM())
+    with client:
+        first = client.post(
+            "/api/runs",
+            json={"description": "FastAPI 在容器内访问 PostgreSQL 报错",
+                  "logs": "sqlalchemy OperationalError connection refused"},
+        ).json()["run_id"]
+        wait_for_status(client, first, "completed")
+        second = client.post("/api/runs", json={"description": "接口出错了"}).json()[
+            "run_id"
+        ]
+        wait_for_status(client, second, "waiting_clarification", "completed")
+
+        runs = client.get("/api/runs").json()
+
+    assert [r["run_id"] for r in runs][0] == second
+    assert {r["run_id"] for r in runs} >= {first, second}
+    assert runs[0]["description"] == "接口出错了"
+    assert runs[0]["status"] in ("waiting_clarification", "completed")
+
+
 def test_run_completes_and_returns_result(monkeypatch, tmp_path, make_fake_retriever) -> None:
     client = make_client(monkeypatch, tmp_path, make_fake_retriever, FakeLLM())
     with client:

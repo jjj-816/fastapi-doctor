@@ -184,6 +184,18 @@ class RunSnapshot(BaseModel):
     result: DiagnosisResponse | None = None
 
 
+class RunSummary(BaseModel):
+    """GET /api/runs：侧栏历史用的运行摘要（不含完整结果）。"""
+
+    run_id: str
+    thread_id: str
+    description: str
+    status: RunStatus
+    error: str | None = None
+    created_at: str
+    updated_at: str
+
+
 class FeedbackRequest(BaseModel):
     """用户对诊断结果的反馈：根因与解决方案的确认或修正。"""
 

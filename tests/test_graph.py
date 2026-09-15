@@ -77,6 +77,8 @@ def test_missing_context_pauses_for_clarification(make_fake_retriever) -> None:
     assert value["type"] == "clarification"
     # 框架是工具前提不再追问，只问组件与日志。
     assert len(value["questions"]) == 2
+    # missing 给出待补字段键名，前端据此映射 resume 的 answers。
+    assert value["missing"] == ["component", "logs"]
     assert "diagnosis" not in result
 
 

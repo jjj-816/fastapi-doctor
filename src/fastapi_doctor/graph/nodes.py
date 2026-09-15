@@ -140,7 +140,12 @@ def clarify_if_needed(state: DiagnosisState) -> dict:
         }
 
     answers = interrupt(
-        {"type": "clarification", "questions": questions, "round": rounds + 1}
+        {
+            "type": "clarification",
+            "questions": questions,
+            "missing": list(missing),
+            "round": rounds + 1,
+        }
     )
     updates: dict = {
         "clarification_questions": questions,
