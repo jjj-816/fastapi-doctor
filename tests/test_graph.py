@@ -60,3 +60,45 @@ def test_missing_context_stops_for_clarification() -> None:
     assert "plan" not in result
     assert "evidence" not in result
     assert len(result["clarification_questions"]) == 3
+
+
+TRACEBACK_LOGS = (
+    'sqlalchemy.exc.OperationalError: connection to server at "localhost" (::1), '
+    "port 5432 failed: Connection refused"
+)
+
+
+def test_traceback_feeds_queries_and_grade(make_fake_retriever) -> None:
+    retriever = make_fake_retriever({"cases/case-db.md": CASE_MD})
+    result = invoke_graph(
+        "FastAPI 在容器内访问 PostgreSQL 报错",
+        logs=TRACEBACK_LOGS,
+        retriever=retriever,
+    )
+
+    assert result["status"] == RunStatus.RETRIEVED
+    assert result["fault_info"].exception_type == "OperationalError"
+    # 宽泛词 + 异常精确词两条检索词。
+    assert len(result["plan"].search_queries) == 2
+    assert "OperationalError" in result["plan"].search_queries[1]
+    assert result["evidence"][0].doc_id == "case-db"
+    assert result["grade"].sufficient is True
+    assert result.get("retry_count", 0) == 0
+
+
+def test_grade_loop_rewrites_up_to_cap(make_fake_retriever) -> None:
+    retriever = make_fake_retriever(
+        {"docs/quickstart.md": "# Quickstart\n\nFastAPI basics. " * 20}
+    )
+    result = invoke_graph(
+        "FastAPI 在容器内访问 PostgreSQL 报错",
+        logs=TRACEBACK_LOGS,
+        retriever=retriever,
+    )
+
+    assert result["status"] == RunStatus.RETRIEVED
+    # 语料中没有任何异常关键字：评分不足，重写两轮后到达上限并停止。
+    assert result["grade"].sufficient is False
+    assert result["retry_count"] == 2
+    # 重写词 = 组件 + 未命中的前两个异常关键字。
+    assert result["plan"].search_queries == ["database operationalerror connection"]

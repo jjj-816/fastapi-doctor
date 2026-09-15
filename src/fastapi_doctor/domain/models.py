@@ -96,6 +96,14 @@ class TracebackInfo(BaseModel):
     key_error_strings: list[str] = Field(default_factory=list)
 
 
+class EvidenceGrade(BaseModel):
+    """对当前证据集合的确定性评分结果（§4.5 的 MVP 规则版）。"""
+
+    sufficient: bool
+    reason: str = ""
+    missing_terms: list[str] = Field(default_factory=list)
+
+
 class DiagnosisRequest(BaseModel):
     """用户提交的原始故障材料，并在 API 边界限制各字段大小。"""
 
@@ -114,3 +122,4 @@ class DiagnosisResponse(BaseModel):
     clarification_questions: list[str]
     plan: InvestigationPlan | None = None
     evidence: list[Evidence] = Field(default_factory=list)
+    grade: EvidenceGrade | None = None

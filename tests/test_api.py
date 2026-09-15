@@ -37,3 +37,4 @@ def test_diagnose_returns_retrieved_evidence(monkeypatch, make_fake_retriever) -
     assert payload["plan"] is not None
     assert payload["evidence"]
     assert payload["evidence"][0]["doc_id"] == "case-db"
+    assert payload["grade"]["sufficient"] is True

@@ -10,21 +10,30 @@ from langgraph.graph import END, START, StateGraph
 from fastapi_doctor.graph.nodes import (
     analyze_input,
     clarify_if_needed,
+    grade_evidence,
     make_retrieve_node,
     plan,
+    rewrite_query,
     route_after_clarification,
+    route_after_grade,
 )
 from fastapi_doctor.graph.state import DiagnosisState
 from fastapi_doctor.retrieval.retriever import KnowledgeRetriever
 
 
 def build_diagnosis_graph(retriever: KnowledgeRetriever | None = None):
-    """构建可直接 invoke 的诊断图实例；检索器可注入以便测试。"""
+    """构建可直接 invoke 的诊断图实例；检索器可注入以便测试。
+
+    流程：plan -> retrieve -> grade_evidence ->（不足且未达上限）
+    rewrite_query -> retrieve ...；证据足够或重写两轮后结束。
+    """
     builder = StateGraph(DiagnosisState)
     builder.add_node("analyze_input", analyze_input)
     builder.add_node("clarify_if_needed", clarify_if_needed)
     builder.add_node("plan", plan)
     builder.add_node("retrieve", make_retrieve_node(retriever or KnowledgeRetriever()))
+    builder.add_node("grade_evidence", grade_evidence)
+    builder.add_node("rewrite_query", rewrite_query)
 
     builder.add_edge(START, "analyze_input")
     builder.add_edge("analyze_input", "clarify_if_needed")
@@ -34,5 +43,11 @@ def build_diagnosis_graph(retriever: KnowledgeRetriever | None = None):
         {"plan": "plan", "end": END},
     )
     builder.add_edge("plan", "retrieve")
-    builder.add_edge("retrieve", END)
+    builder.add_edge("retrieve", "grade_evidence")
+    builder.add_conditional_edges(
+        "grade_evidence",
+        route_after_grade,
+        {"rewrite": "rewrite_query", "done": END},
+    )
+    builder.add_edge("rewrite_query", "retrieve")
     return builder.compile()

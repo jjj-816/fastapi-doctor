@@ -19,7 +19,11 @@ source_url: "https://example.com/case"
 
 # 症状
 
-容器内 FastAPI 启动后访问数据库报 Connection refused。
+容器内 FastAPI 启动后访问数据库报 Connection refused：
+
+```text
+sqlalchemy.exc.OperationalError: connection to server at "localhost" (::1), port 5432 failed: Connection refused
+```
 
 # 根因分析
 

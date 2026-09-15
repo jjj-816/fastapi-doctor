@@ -27,3 +27,6 @@ CHILD_CHUNK_OVERLAP = 100
 MIN_PARENT_SIZE = 2_000
 MAX_PARENT_SIZE = 4_000
 HEADERS_TO_SPLIT_ON = [("#", "H1"), ("##", "H2"), ("###", "H3")]
+
+# 证据不足时的查询重写上限（设计 §4.5：所有回路都有明确上限）。
+MAX_QUERY_REWRITES = 2
