@@ -128,6 +128,14 @@ PYTHON_MAIN_START = '<div class="body" role="main">'
 PYTHON_MAIN_END = '<div class="sphinxsidebar"'
 SQLA_MAIN_START = '<div id="docs-body"'
 SQLA_MAIN_ENDS = ("<footer", '<div id="docs-footer"', '<div class="footer"')
+# opentelemetry-python-contrib 是 Sphinx/RTD 主题；opentelemetry.io 是 Hugo docsy；
+# docs.langchain.com 是 Fern 服务端渲染（正文在 <main id="content-container">）。
+OTEL_FASTAPI_START = 'role="main" class="document"'
+OTEL_FASTAPI_ENDS = ('<div class="rst-footer-buttons"', "<footer>")
+OTEL_PY_START = '<main class="col-12'
+OTEL_PY_ENDS = ('<footer class="td-footer',)
+LANGGRAPH_START = 'id="content-container"'
+LANGGRAPH_ENDS = ("</main>",)
 HTML_SOURCES: list[tuple[str, str, str, str, tuple[str, ...]]] = [
     ("sqlalchemy", "https://docs.sqlalchemy.org/en/20/core/connections.html", "connections.md", SQLA_MAIN_START, SQLA_MAIN_ENDS),
     ("sqlalchemy", "https://docs.sqlalchemy.org/en/20/core/pooling.html", "pooling.md", SQLA_MAIN_START, SQLA_MAIN_ENDS),
@@ -140,6 +148,10 @@ HTML_SOURCES: list[tuple[str, str, str, str, tuple[str, ...]]] = [
     ("python", f"{PYTHON_DOC_BASE}/asyncio-stream.html", "asyncio-stream.md", PYTHON_MAIN_START, (PYTHON_MAIN_END,)),
     ("python", f"{PYTHON_DOC_BASE}/asyncio-sync.html", "asyncio-sync.md", PYTHON_MAIN_START, (PYTHON_MAIN_END,)),
     ("python", f"{PYTHON_DOC_BASE}/asyncio-dev.html", "asyncio-dev.md", PYTHON_MAIN_START, (PYTHON_MAIN_END,)),
+    ("python", "https://docs.python.org/3.11/howto/logging-cookbook.html", "logging-cookbook.md", PYTHON_MAIN_START, (PYTHON_MAIN_END,)),
+    ("opentelemetry", "https://opentelemetry-python-contrib.readthedocs.io/en/latest/instrumentation/fastapi/fastapi.html", "fastapi-instrumentation.md", OTEL_FASTAPI_START, OTEL_FASTAPI_ENDS),
+    ("opentelemetry", "https://opentelemetry.io/docs/languages/python/instrumentation/", "python-instrumentation.md", OTEL_PY_START, OTEL_PY_ENDS),
+    ("langgraph", "https://docs.langchain.com/oss/python/langgraph/graph-api", "graph-api.md", LANGGRAPH_START, LANGGRAPH_ENDS),
 ]
 
 
@@ -353,7 +365,13 @@ def collect_python_pdf(manifest: list[dict], missing: list[str]) -> None:
 
 
 def main() -> int:
+    # --skip-pdfs：跳过 Python PDF 存档；--only=<名称> 只跑某一组收集器（如 --only=html），
+    # 部分运行时与既有 MANIFEST 合并，避免清单被单组结果覆盖。
     skip_pdfs = "--skip-pdfs" in sys.argv[1:]
+    only = None
+    for arg in sys.argv[1:]:
+        if arg.startswith("--only="):
+            only = arg.split("=", 1)[1]
     manifest: list[dict] = []
     missing: list[str] = []
     collectors = [
@@ -364,11 +382,18 @@ def main() -> int:
         ("html", collect_html_sources),
     ]
     for name, collector in collectors:
+        if only and name != only:
+            continue
         try:
             collector(manifest, missing)
         except Exception as error:  # noqa: BLE001 — 单一来源失败不应中断其余收集
             missing.append(f"{name}: 整组失败 ({error})")
-    if not skip_pdfs:
+    if only and MANIFEST_PATH.exists():
+        existing = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
+        by_file = {entry["file"]: entry for entry in existing.get("sources", [])}
+        by_file.update({entry["file"]: entry for entry in manifest})
+        manifest = list(by_file.values())
+    if not only and not skip_pdfs:
         try:
             collect_python_pdf(manifest, missing)
         except Exception as error:  # noqa: BLE001 — PDF 下载失败不应影响 Markdown 收集结果
