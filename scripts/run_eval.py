@@ -40,7 +40,8 @@ def evaluate_record(graph, record: dict) -> dict:
                 "code": "",
                 "config": "",
                 "status": RunStatus.RUNNING,
-            }
+            },
+            config={"configurable": {"thread_id": f"eval-{record['id']}"}},
         )
     except Exception as exc:  # 图执行失败本身就是一条指标
         result.update(
@@ -50,15 +51,31 @@ def evaluate_record(graph, record: dict) -> dict:
         )
         return result
 
-    status = state["status"]
-    result["status"] = str(status)
     result["elapsed"] = round(time.time() - t0, 1)
     result["execution_ok"] = True
 
-    # 澄清决策：实际是否停下澄清 vs 预期。
-    clarified = status == RunStatus.NEEDS_CLARIFICATION
-    result["clarified"] = clarified
-    result["clarification_ok"] = clarified == expected["should_clarify"]
+    # 中断即两类人工介入（§4.2/§4.6）：澄清暂停、危险确认暂停。
+    interrupts = state.get("__interrupt__")
+    if interrupts:
+        value = interrupts[0].value
+        if value.get("type") == "clarification":
+            result["status"] = "waiting_clarification"
+            result["clarified"] = True
+            result["clarification_ok"] = expected["should_clarify"]
+        else:
+            result["status"] = "waiting_confirmation"
+            result["clarification_ok"] = not expected["should_clarify"]
+            result["confirmation_ok"] = expected["expect_confirmation"]
+        return result
+
+    status = state["status"]
+    result["status"] = str(status)
+    result["clarified"] = False
+    result["clarification_ok"] = not expected["should_clarify"]
+    result["needs_confirmation"] = False
+    result["confirmation_ok"] = (
+        False if expected["expect_confirmation"] else None
+    )
 
     # Retrieval Hit@5：必要来源是否出现在前 5 条证据的 doc_id 中。
     doc_ids = [e.doc_id for e in state.get("evidence", [])]
@@ -81,20 +98,12 @@ def evaluate_record(graph, record: dict) -> dict:
         result["root_cause_hit"] = None
 
     # 引用完整率：给出了引用，且没有引用不存在的证据。
-    if diagnosis is not None and not clarified:
+    if diagnosis is not None:
         review = state.get("review")
         unknown = bool(review) and any("不存在" in i for i in review.issues)
         result["citations_complete"] = bool(diagnosis.citations) and not unknown
     else:
         result["citations_complete"] = None
-
-    # 高风险拦截：预期需确认的记录是否真的停在待确认状态。
-    result["needs_confirmation"] = status == RunStatus.NEEDS_CONFIRMATION
-    result["confirmation_ok"] = (
-        (status == RunStatus.NEEDS_CONFIRMATION)
-        if expected["expect_confirmation"]
-        else None
-    )
     return result
 
 
@@ -144,12 +153,19 @@ def main() -> None:
         if not r.get("execution_ok"):
             print(f"{r['id']}  执行失败: {r['error']}")
             continue
+
+        def mark(key: str) -> str:
+            value = r.get(key)
+            return "✓" if value else ("✗" if value is not None else "—")
+
         print(
-            f"{r['id']}  status={r['status']:<20} 澄清={'✓' if r['clarification_ok'] else '✗'}"
-            f"  Hit@5={'✓' if r['hit5'] else ('✗' if r['hit5'] is not None else '—')}"
-            f"  根因={'✓' if r['root_cause_hit'] else ('✗' if r['root_cause_hit'] is not None else '—')}"
-            f"  引用={'✓' if r['citations_complete'] else ('✗' if r['citations_complete'] is not None else '—')}"
-            f"  [{r['elapsed']}s]"
+            f"{r['id']}  status={r.get('status', '?'):<24}"
+            f"  澄清={'✓' if r.get('clarification_ok') else '✗'}"
+            f"  Hit@5={mark('hit5')}"
+            f"  根因={mark('root_cause_hit')}"
+            f"  引用={mark('citations_complete')}"
+            f"  确认={mark('confirmation_ok')}"
+            f"  [{r.get('elapsed', '?')}s]"
         )
         if r.get("most_likely_cause"):
             print(f"      主因: {r['most_likely_cause']}")

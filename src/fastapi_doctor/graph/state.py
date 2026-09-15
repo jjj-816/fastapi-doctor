@@ -34,6 +34,8 @@ class DiagnosisState(TypedDict):
     evidence: NotRequired[list[Evidence]]
     grade: NotRequired[EvidenceGrade]
     retry_count: NotRequired[int]
+    clarify_rounds: NotRequired[int]
+    resumed: NotRequired[bool]
     diagnosis: NotRequired[DiagnosisReport]
     review: NotRequired[ReviewResult]
     error: NotRequired[str]

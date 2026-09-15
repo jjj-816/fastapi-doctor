@@ -6,6 +6,9 @@
 
 import re
 
+from langgraph.config import get_config
+from langgraph.types import interrupt
+
 from fastapi_doctor import config
 from fastapi_doctor.analysis import analyze_traceback
 from fastapi_doctor.domain.models import (
@@ -20,13 +23,32 @@ from fastapi_doctor.domain.models import (
     TracebackInfo,
 )
 from fastapi_doctor.graph.state import DiagnosisState
+from fastapi_doctor.security import mask_secrets
+
+
+def _emit(event_type: str, payload: dict) -> None:
+    """把节点级事件交给注入的 event_sink（异步 API 的事件流）。
+
+    sink 由运行器通过 config["configurable"]["event_sink"] 注入；
+    单元测试或直接调用节点时没有 sink，静默跳过。
+    """
+    try:
+        configurable = get_config().get("configurable") or {}
+    except Exception:  # 图运行时之外没有 config 可取
+        return
+    sink = configurable.get("event_sink")
+    if callable(sink):
+        sink({"type": event_type, "payload": payload})
 
 
 def analyze_input(state: DiagnosisState) -> dict:
-    """从原始输入中提取框架、组件、HTTP 状态码和缺失信息。"""
-    text = "\n".join(
-        (state["description"], state["logs"], state["code"], state["config"])
-    ).lower()
+    """从原始输入中提取框架、组件、HTTP 状态码和缺失信息。
+
+    四项输入先经过脱敏（§7）：脱敏后的文本贯穿后续提示词与持久化。
+    """
+    _emit("node_started", {"node": "analyze_input"})
+    inputs = {key: mask_secrets(state[key]) for key in ("description", "logs", "code", "config")}
+    text = "\n".join(inputs.values()).lower()
 
     status_match = re.search(r"\b(4\d\d|5\d\d)\b", text)
     http_status = int(status_match.group(1)) if status_match else None
@@ -47,10 +69,10 @@ def analyze_input(state: DiagnosisState) -> dict:
     missing_information = []
     if component is None:
         missing_information.append("component")
-    if not state["logs"].strip():
+    if not inputs["logs"].strip():
         missing_information.append("logs")
 
-    traceback_info = analyze_traceback(state["logs"])
+    traceback_info = analyze_traceback(inputs["logs"])
     fault_info = FaultInfo(
         framework=framework,
         component=component,
@@ -60,27 +82,60 @@ def analyze_input(state: DiagnosisState) -> dict:
             else None
         ),
         http_status=http_status,
-        symptoms=[state["description"].strip()],
+        symptoms=[inputs["description"].strip()],
         missing_information=missing_information,
     )
-    return {"fault_info": fault_info, "traceback_info": traceback_info}
+    _emit("input_analyzed", {"fault_info": fault_info.model_dump()})
+    return {**inputs, "fault_info": fault_info, "traceback_info": traceback_info}
+
+
+CLARIFY_QUESTIONS = {
+    "component": "故障发生在启动、请求处理、异步任务还是数据库访问阶段？",
+    "logs": "请提供完整异常类型和 traceback 的最后 20 行。",
+}
 
 
 def clarify_if_needed(state: DiagnosisState) -> dict:
-    """把会影响后续诊断的缺失字段转换为具体澄清问题。"""
-    questions = {
-        "component": "故障发生在启动、请求处理、异步任务还是数据库访问阶段？",
-        "logs": "请提供完整异常类型和 traceback 的最后 20 行。",
-    }
+    """信息不足时通过 interrupt 暂停等待用户补充（第一类人工介入）。
+
+    resume 值是 {description/logs/code/config: 补充文本} 的字典；节点把
+    补充内容脱敏后并入输入，路由回 analyze_input 重新分析。补满或达到
+    轮次上限（MAX_CLARIFY_ROUNDS）才放行/结束。
+    """
+    _emit("node_started", {"node": "clarify_if_needed"})
     missing = state["fault_info"].missing_information
-    clarification_questions = [questions[item] for item in missing]
-    status = (
-        RunStatus.NEEDS_CLARIFICATION if clarification_questions else RunStatus.RUNNING
+    questions = [CLARIFY_QUESTIONS[item] for item in missing]
+    rounds = state.get("clarify_rounds", 0)
+
+    if not questions:
+        return {
+            "clarification_questions": [],
+            "clarify_rounds": rounds,
+            "resumed": False,
+            "status": RunStatus.RUNNING,
+        }
+    if rounds >= config.MAX_CLARIFY_ROUNDS:
+        return {
+            "clarification_questions": questions,
+            "clarify_rounds": rounds,
+            "resumed": False,
+            "status": RunStatus.NEEDS_CLARIFICATION,
+        }
+
+    answers = interrupt(
+        {"type": "clarification", "questions": questions, "round": rounds + 1}
     )
-    return {
-        "clarification_questions": clarification_questions,
-        "status": status,
+    updates: dict = {
+        "clarification_questions": questions,
+        "clarify_rounds": rounds + 1,
+        "resumed": True,
+        "status": RunStatus.RUNNING,
     }
+    for key in ("description", "logs", "code", "config"):
+        value = (answers or {}).get(key)
+        if value:
+            updates[key] = mask_secrets(str(value))
+    return updates
 
 
 def plan(state: DiagnosisState) -> dict:
@@ -89,6 +144,7 @@ def plan(state: DiagnosisState) -> dict:
     检索词最多两条：宽泛词（框架 + 组件 + 状态码）负责召回背景知识；
     异常栈存在时追加精确词（异常类名 + 根异常消息），命中 BM25 强项。
     """
+    _emit("node_started", {"node": "plan"})
     fault = state["fault_info"]
     traceback_info = state.get("traceback_info") or TracebackInfo()
 
@@ -119,6 +175,7 @@ def plan(state: DiagnosisState) -> dict:
         search_queries=queries or [""],
         verification_steps=["用最小复现请求确认故障是否稳定出现"],
     )
+    _emit("plan_created", {"search_queries": plan.search_queries})
     return {"plan": plan, "status": RunStatus.PLANNED}
 
 
@@ -147,7 +204,9 @@ def _append_log_tail_query(queries: list[str], logs: str) -> list[str]:
 
 
 def route_after_clarification(state: DiagnosisState) -> str:
-    """信息不足时停止等待补充，否则进入调查规划节点。"""
+    """补充过信息则回到分析节点重新提取，信息足够则规划，超限则结束。"""
+    if state.get("resumed"):
+        return "analyze"
     if state["status"] == RunStatus.NEEDS_CLARIFICATION:
         return "end"
     return "plan"
@@ -162,8 +221,20 @@ def make_retrieve_node(retriever):
     """
 
     def retrieve(state: DiagnosisState) -> dict:
+        _emit("node_started", {"node": "retrieve"})
         plan = state["plan"]
         queries = plan.search_queries or [""]
+        _emit(
+            "tool_called",
+            {
+                "tools": [
+                    "search_official_docs",
+                    "search_incident_cases",
+                    "search_runbooks",
+                ],
+                "queries": queries,
+            },
+        )
         merged: dict[str, Evidence] = {}
         for query in queries:
             for source_type in SourceType:
@@ -180,6 +251,10 @@ def make_retrieve_node(retriever):
             if best is None or evidence.score > best.score:
                 by_doc[evidence.doc_id] = evidence
         evidence_list = sorted(by_doc.values(), key=lambda e: e.score, reverse=True)
+        _emit(
+            "evidence_found",
+            {"doc_ids": [e.doc_id for e in evidence_list[: config.MAX_EVIDENCE_ITEMS]]},
+        )
         return {
             "evidence": evidence_list,
             "status": RunStatus.RETRIEVED,
@@ -236,11 +311,13 @@ def grade_evidence(state: DiagnosisState) -> dict:
                 reason="证据未包含异常关键字",
                 missing_terms=needles[:3],
             )
+    _emit("evidence_graded", grade.model_dump())
     return {"grade": grade}
 
 
 def rewrite_query(state: DiagnosisState) -> dict:
     """把证据中未命中的异常关键字并入新检索词后重试（上限见 config）。"""
+    _emit("node_started", {"node": "rewrite_query"})
     fault = state["fault_info"]
     traceback_info = state.get("traceback_info") or TracebackInfo()
     retry_count = state.get("retry_count", 0) + 1
@@ -252,6 +329,7 @@ def rewrite_query(state: DiagnosisState) -> dict:
 
     new_query = " ".join([fault.component or "", *missing[:2]]).strip()
     plan = state["plan"].model_copy(update={"search_queries": [new_query]})
+    _emit("query_rewritten", {"query": new_query, "retry_count": retry_count})
     return {"plan": plan, "retry_count": retry_count}
 
 
@@ -302,6 +380,7 @@ def make_diagnose_node(llm):
     """构建 diagnose 节点；LLM 可注入，测试用假实现不依赖模型服务。"""
 
     def diagnose(state: DiagnosisState) -> dict:
+        _emit("node_started", {"node": "diagnose"})
         # GLM/DeepSeek 等 OpenAI 兼容服务对 json_schema 的服务端约束不严格，
         # 模型会用 ```json 围栏输出导致严格解析失败；这类服务改走 function
         # calling，从 tool_call 参数取结构化结果。本地 Ollama 用默认即可。
@@ -312,6 +391,13 @@ def make_diagnose_node(llm):
         else:
             structured = llm.with_structured_output(DiagnosisReport)
         report = structured.invoke(build_diagnosis_prompt(state))
+        _emit(
+            "diagnosis_generated",
+            {
+                "most_likely_cause": report.most_likely_cause,
+                "confidence": report.confidence,
+            },
+        )
         return {"diagnosis": report, "status": RunStatus.DIAGNOSED}
 
     return diagnose
@@ -330,11 +416,13 @@ def _find_dangerous_commands(suggestions: list[str]) -> list[str]:
 
 
 def review(state: DiagnosisState) -> dict:
-    """确定性审查（§4.6）：引用一致性 + 危险命令人工确认。
+    """确定性审查（§4.6）：引用一致性 + 危险命令 interrupt 人工确认。
 
-    「证据问题返回检索节点」与 LangGraph interrupt 人工确认将在异步
-    SSE 接口阶段接入；当前把危险建议标记为待确认并结束运行。
+    含危险建议时通过 interrupt 暂停（第二类人工介入），resume 值为
+    {"approved": true/false}；批准后正常完成，拒绝则运行失败结束。
+    「证据问题返回检索节点」留待后续迭代。
     """
+    _emit("node_started", {"node": "review"})
     report = state["diagnosis"]
     evidence = state.get("evidence", [])
     issues: list[str] = []
@@ -352,16 +440,43 @@ def review(state: DiagnosisState) -> dict:
 
     dangerous = _find_dangerous_commands(report.fix_suggestions)
 
+    if dangerous:
+        decision = interrupt(
+            {
+                "type": "confirmation",
+                "dangerous_commands": dangerous,
+                "report": report.model_dump(),
+            }
+        )
+        approved = bool(
+            decision.get("approved") if isinstance(decision, dict) else decision
+        )
+        _emit(
+            "review_completed",
+            {"passed": not issues, "needs_confirmation": True, "approved": approved},
+        )
+        return {
+            "review": ReviewResult(
+                passed=not issues,
+                issues=issues,
+                dangerous_commands=dangerous,
+                needs_confirmation=True,
+                confirmed=approved,
+            ),
+            "status": RunStatus.COMPLETED if approved else RunStatus.FAILED,
+            "error": None if approved else "用户拒绝了包含危险命令的修复建议",
+        }
+
+    _emit(
+        "review_completed",
+        {"passed": not issues, "needs_confirmation": False},
+    )
     return {
         "review": ReviewResult(
             passed=not issues,
             issues=issues,
             dangerous_commands=dangerous,
-            needs_confirmation=bool(dangerous),
+            needs_confirmation=False,
         ),
-        "status": (
-            RunStatus.NEEDS_CONFIRMATION
-            if dangerous
-            else RunStatus.COMPLETED
-        ),
+        "status": RunStatus.COMPLETED,
     }

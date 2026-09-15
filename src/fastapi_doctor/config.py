@@ -16,6 +16,8 @@ MARKDOWN_DIR = DATA_DIR / "knowledge" / "markdown"
 PARENT_STORE_PATH = DATA_DIR / "knowledge" / "parents"
 QDRANT_DB_PATH = DATA_DIR / "knowledge" / "qdrant"
 MANIFEST_PATH = DATA_DIR / "knowledge" / "MANIFEST.json"
+CHECKPOINT_DB_PATH = DATA_DIR / "checkpoints.db"
+APPLICATION_DB_PATH = DATA_DIR / "application.db"
 
 # 仓库根目录的 .env 可覆盖以下环境变量（已存在的进程环境变量优先）。
 load_dotenv(BASE_DIR / ".env")
@@ -42,6 +44,9 @@ HEADERS_TO_SPLIT_ON = [("#", "H1"), ("##", "H2"), ("###", "H3")]
 
 # 证据不足时的查询重写上限（设计 §4.5：所有回路都有明确上限）。
 MAX_QUERY_REWRITES = 2
+
+# 澄清回合上限：用户补充后仍缺信息则停止并保留待澄清状态（§4.2/§7）。
+MAX_CLARIFY_ROUNDS = 2
 
 # 送入诊断提示词的证据预算，控制小模型上下文占用。
 MAX_EVIDENCE_ITEMS = 8

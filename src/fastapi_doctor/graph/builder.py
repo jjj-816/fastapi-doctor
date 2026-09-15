@@ -1,10 +1,14 @@
 """组装并编译故障诊断 LangGraph。
 
-当前最小图验证：节点更新状态、条件边决定去向、信息不足时提前结束、
-分源检索（§4.4）与证据评分/查询重写回路（§4.5）、LLM 诊断与审查（§4.6）。
-后续将在这里接入 interrupt/resume 人工确认与 SSE 事件流。
+当前图验证：节点更新状态、条件边决定去向、分源检索（§4.4）、证据
+评分/查询重写回路（§4.5）、LLM 诊断与审查（§4.6），以及两类人工
+介入（§4.2 澄清、§4.6 危险确认）——均通过 LangGraph interrupt 暂停，
+由异步 API 以 Command(resume=...) 恢复（§6.1）。运行事件经 config
+注入的 event_sink 发往 SSE。
 """
 
+from langgraph.checkpoint.base import BaseCheckpointSaver
+from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 
 from fastapi_doctor.graph.nodes import (
@@ -26,12 +30,14 @@ from fastapi_doctor.retrieval.retriever import KnowledgeRetriever
 def build_diagnosis_graph(
     retriever: KnowledgeRetriever | None = None,
     llm=None,
+    checkpointer: BaseCheckpointSaver | None = None,
 ):
-    """构建可直接 invoke 的诊断图实例；检索器与 LLM 均可注入以便测试。
+    """构建可 invoke 的诊断图实例；检索器、LLM 与 Checkpointer 均可注入。
 
-    流程：plan -> retrieve -> grade_evidence ->（不足且未达上限）
-    rewrite_query -> retrieve ... -> diagnose -> review -> END。
-    危险修复建议在 review 被标记为待人工确认并结束。
+    流程：analyze_input -> clarify_if_needed ->（补充后回到 analyze_input；
+    不足且达上限则结束）plan -> retrieve -> grade_evidence ->（不足且未达
+    上限）rewrite_query -> retrieve ... -> diagnose -> review -> END。
+    澄清与危险确认会 interrupt 暂停，等待 API 层恢复。
     """
     builder = StateGraph(DiagnosisState)
     builder.add_node("analyze_input", analyze_input)
@@ -48,7 +54,7 @@ def build_diagnosis_graph(
     builder.add_conditional_edges(
         "clarify_if_needed",
         route_after_clarification,
-        {"plan": "plan", "end": END},
+        {"analyze": "analyze_input", "plan": "plan", "end": END},
     )
     builder.add_edge("plan", "retrieve")
     builder.add_edge("retrieve", "grade_evidence")
@@ -60,4 +66,4 @@ def build_diagnosis_graph(
     builder.add_edge("rewrite_query", "retrieve")
     builder.add_edge("diagnose", "review")
     builder.add_edge("review", END)
-    return builder.compile()
+    return builder.compile(checkpointer=checkpointer or MemorySaver())

@@ -18,6 +18,9 @@ class RunStatus(StrEnum):
     RETRIEVED = "retrieved"
     DIAGNOSED = "diagnosed"
     NEEDS_CONFIRMATION = "needs_confirmation"
+    # API 展示层状态：图因 interrupt 暂停，等待用户补充或确认。
+    WAITING_CLARIFICATION = "waiting_clarification"
+    WAITING_CONFIRMATION = "waiting_confirmation"
     COMPLETED = "completed"
     FAILED = "failed"
 
@@ -128,6 +131,7 @@ class ReviewResult(BaseModel):
     issues: list[str] = Field(default_factory=list)
     dangerous_commands: list[str] = Field(default_factory=list)
     needs_confirmation: bool = False
+    confirmed: bool = False
 
 
 class DiagnosisRequest(BaseModel):
@@ -140,7 +144,7 @@ class DiagnosisRequest(BaseModel):
 
 
 class DiagnosisResponse(BaseModel):
-    """当前同步演示接口返回的诊断图状态摘要。"""
+    """诊断图最终状态的摘要（作为运行记录的结果部分返回）。"""
 
     run_id: str
     status: RunStatus
@@ -151,3 +155,38 @@ class DiagnosisResponse(BaseModel):
     grade: EvidenceGrade | None = None
     diagnosis: DiagnosisReport | None = None
     review: ReviewResult | None = None
+
+
+class RunCreated(BaseModel):
+    """POST /api/runs 的响应：任务已受理，事件经 SSE 推送。"""
+
+    run_id: str
+    thread_id: str
+    status: RunStatus
+
+
+class RunResumeRequest(BaseModel):
+    """恢复中断任务的请求：澄清回合填 answers，确认回合填 approved。"""
+
+    answers: dict[str, str] = Field(default_factory=dict)
+    approved: bool | None = None
+
+
+class RunSnapshot(BaseModel):
+    """GET /api/runs/{run_id}：当前状态与（已完成时的）最终结果。"""
+
+    run_id: str
+    thread_id: str
+    status: RunStatus
+    error: str | None = None
+    created_at: str
+    updated_at: str
+    result: DiagnosisResponse | None = None
+
+
+class FeedbackRequest(BaseModel):
+    """用户对诊断结果的反馈：根因与解决方案的确认或修正。"""
+
+    rating: int = Field(ge=1, le=5)
+    root_cause: str = Field(default="", max_length=2000)
+    solution: str = Field(default="", max_length=2000)
