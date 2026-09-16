@@ -647,7 +647,14 @@ def make_diagnose_node(llm):
     def diagnose(state: DiagnosisState) -> dict:
         _emit("node_started", {"node": "diagnose"})
         prompt = build_diagnosis_prompt(state)
-        report = _invoke_structured(llm, DiagnosisReport, prompt)
+        try:
+            report = _invoke_structured(llm, DiagnosisReport, prompt)
+        except Exception:
+            # 瞬时失败（超时/限流）重试一次：plan/grade 失败都有规则回退，
+            # 诊断是流程里唯一没有 Plan B 的 LLM 调用，至少别一击即溃；
+            # 两次都失败才让运行失败（错误如实上抛）。
+            _emit("diagnosis_retrying", {"reason": "llm_error"})
+            report = _invoke_structured(llm, DiagnosisReport, prompt)
 
         # 引用自检（§4.6 审查前移）：引用了未检索到的证据 id 时，把问题
         # 喂回模型重试一次；仍失败则交由 review 节点如实标注。citations

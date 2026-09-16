@@ -406,6 +406,32 @@ def test_diagnose_retries_once_on_invalid_citation(make_fake_retriever) -> None:
     assert result["status"] == RunStatus.COMPLETED
 
 
+def test_diagnose_survives_transient_llm_error(make_fake_retriever) -> None:
+    """诊断调用瞬时失败（超时/限流）重试一次，不直接判死整次运行。"""
+    llm = FakeLLM(report_errors=1)
+    graph = build(
+        retriever=make_fake_retriever({"cases/case-db.md": CASE_MD}), llm=llm
+    )
+    result = graph.invoke({**INPUT, "logs": TRACEBACK_LOGS}, CONFIG)
+
+    # 规划(失败回退) + 评分 + 诊断(失败) + 诊断重试。
+    assert len(llm.prompts) == 4
+    assert result["diagnosis"].most_likely_cause
+    assert result["status"] == RunStatus.COMPLETED
+
+
+def test_diagnose_double_failure_raises(make_fake_retriever) -> None:
+    """两次诊断都失败时异常上抛（后台执行器捕获后置 FAILED，不编造结论）。"""
+    import pytest
+
+    graph = build(
+        retriever=make_fake_retriever({"cases/case-db.md": CASE_MD}),
+        llm=FakeLLM(report_errors=2),
+    )
+    with pytest.raises(RuntimeError, match="瞬时 LLM 失败"):
+        graph.invoke({**INPUT, "logs": TRACEBACK_LOGS}, CONFIG)
+
+
 def test_dangerous_suggestion_pauses_for_confirmation(make_fake_retriever) -> None:
     graph = build(
         retriever=make_fake_retriever({"cases/case-db.md": CASE_MD}),

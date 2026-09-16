@@ -20,7 +20,8 @@ def build_llm() -> BaseChatModel:
             api_key=config.LLM_API_KEY,
             base_url=config.LLM_BASE_URL,
             temperature=config.LLM_TEMPERATURE,
-            timeout=120,
+            timeout=config.LLM_REQUEST_TIMEOUT,
+            max_retries=1,
         )
     from langchain_ollama import ChatOllama
 

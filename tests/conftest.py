@@ -104,6 +104,7 @@ class FakeLLM:
         reports: list[DiagnosisReport] | None = None,
         plan: InvestigationPlan | None = None,
         plan_error: Exception | None = None,
+        report_errors: int = 0,
     ):
         self.report = report or DiagnosisReport(
             most_likely_cause="容器内 localhost 指向容器自身，数据库不可达",
@@ -123,6 +124,8 @@ class FakeLLM:
         self.plan_error = plan_error
         # 按次弹出诊断结果（测引用自检重试）；用尽后回落到固定 report。
         self._reports = list(reports) if reports else None
+        # 前 N 次诊断调用抛错（测瞬时失败重试）；仅作用于诊断 schema。
+        self.report_errors = report_errors
         self._schema = None
         self.prompts: list[str] = []
 
@@ -142,6 +145,9 @@ class FakeLLM:
             if self.plan is None:
                 raise RuntimeError("FakeLLM 未配置 plan")
             return self.plan
+        if self.report_errors > 0:
+            self.report_errors -= 1
+            raise RuntimeError("瞬时 LLM 失败（模拟超时/限流）")
         if self._reports:
             return self._reports.pop(0)
         return self.report

@@ -34,6 +34,9 @@ LLM_API_KEY = os.environ.get("LLM_API_KEY", "")
 LLM_BASE_URL = os.environ.get("LLM_BASE_URL", "")
 LLM_TEMPERATURE = 0
 LLM_SEED = 42
+# 单次请求超时（秒）：GLM-5.3-Flash 带思考的长调用实测可达 200s+，120s 会
+# 把正常慢调用掐死在重试里（实测：诊断调用超时导致整次运行失败）。
+LLM_REQUEST_TIMEOUT = int(os.environ.get("LLM_REQUEST_TIMEOUT", "300"))
 
 # 当前单位是字符而非 token，沿用参考项目参数，后续可根据评测结果调整。
 CHILD_CHUNK_SIZE = 500
