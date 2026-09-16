@@ -1,4 +1,4 @@
-"""运行管理（设计 §6.1/§6.2/§6.3）：任务记录、事件流与图执行器。
+"""运行管理：任务记录、事件流与图执行器。
 
 RunManager 用标准库 SQLite 落库运行、事件与反馈（data/application.db），
 并把新事件推送给已注册的 asyncio.Queue 供 SSE 实时读取；图执行器
@@ -163,7 +163,7 @@ class RunManager:
         return deleted > 0
 
     def fail_stale_running(self) -> int:
-        """进程重启后，之前进行中的运行不会再恢复（§6.1 MVP 无持久化任务队列）。
+        """进程重启后，之前进行中的运行不会再恢复（MVP 无持久化任务队列）。
 
         启动时统一标记为失败：侧栏不再无限「诊断中」，也允许用户删除。
         """
@@ -282,7 +282,7 @@ def execute_run(
             result_json=result_json,
         )
         manager.emit(run_id, "run_completed", {"status": str(result.get("status"))})
-    except Exception as exc:  # 执行失败同样写状态与事件（§7）
+    except Exception as exc:  # 执行失败同样写状态与事件
         manager.set_status(run_id, RunStatus.FAILED, error=f"{type(exc).__name__}: {exc}")
         manager.emit(run_id, "run_failed", {"error": f"{type(exc).__name__}: {exc}"})
 

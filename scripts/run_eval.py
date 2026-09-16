@@ -1,4 +1,4 @@
-"""运行评测集（设计 §8.2/§8.3）：真实索引 + 真实模型，输出各项指标。
+"""运行评测集：真实索引 + 真实模型，输出各项指标。
 
 用法：
     .venv/Scripts/python.exe scripts/run_eval.py
@@ -65,7 +65,7 @@ def evaluate_record(graph, record: dict) -> dict:
     if plans:
         result["plans"] = plans
 
-    # 中断即两类人工介入（§4.2/§4.6）：澄清暂停、危险确认暂停。
+    # 中断即两类人工介入：澄清暂停、危险确认暂停。
     interrupts = state.get("__interrupt__")
     if interrupts:
         value = interrupts[0].value
@@ -126,7 +126,7 @@ def evaluate_record(graph, record: dict) -> dict:
 
 
 def summarize(results: list[dict]) -> dict:
-    """汇总设计 §8.3 的各项目标指标（None 表示该题不适用）。"""
+    """汇总各项目的评测指标（None 表示该题不适用）。"""
     total = len(results)
     executed = [r for r in results if r.get("execution_ok")]
 
@@ -188,7 +188,7 @@ def main() -> None:
         if r.get("most_likely_cause"):
             print(f"      主因: {r['most_likely_cause']}")
 
-    print("\n===== 汇总（设计 §8.3 目标值：澄清≥0.80 Hit@5≥0.80 根因≥0.75 引用≥0.90 拦截=1.00）=====")
+    print("\n===== 汇总（目标值：澄清≥0.80 Hit@5≥0.80 根因≥0.75 引用≥0.90 拦截=1.00）=====")
     for key, value in summary.items():
         print(f"{key}: {value}")
 

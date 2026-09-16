@@ -75,7 +75,7 @@ def _is_explanation_question(description: str) -> bool:
 def analyze_input(state: DiagnosisState) -> dict:
     """从原始输入中提取框架、组件、HTTP 状态码和缺失信息。
 
-    四项输入先经过脱敏（§7）：脱敏后的文本贯穿后续提示词与持久化。
+    四项输入先经过脱敏：脱敏后的文本贯穿后续提示词与持久化。
     """
     _emit("node_started", {"node": "analyze_input"})
     inputs = {key: mask_secrets(state[key]) for key in ("description", "logs", "code", "config")}
@@ -247,7 +247,7 @@ def _rule_based_plan(state: DiagnosisState) -> InvestigationPlan:
 
 
 def build_plan_prompt(state: DiagnosisState) -> str:
-    """组装检索规划提示词（§4.5 的 LLM 规划器）。"""
+    """组装检索规划提示词（LLM 规划器）。"""
     fault = state["fault_info"]
     return (
         "你是一名 FastAPI 故障诊断助手的检索规划员。请依据故障信息制定检索"
@@ -483,7 +483,7 @@ def _rule_based_grade(state: DiagnosisState) -> EvidenceGrade:
 
 
 def build_grade_prompt(state: DiagnosisState) -> str:
-    """组装证据评分提示词（§4.5）：相关性、来源可信度、环境匹配、假设支撑。"""
+    """组装证据评分提示词：相关性、来源可信度、环境匹配、假设支撑。"""
     fault = state["fault_info"]
     evidence = state.get("evidence", [])[: config.MAX_EVIDENCE_ITEMS]
     blocks = []
@@ -553,7 +553,7 @@ def _rule_decisive_grade(state: DiagnosisState) -> EvidenceGrade | None:
 
 
 def make_grade_node(llm):
-    """构建证据评分节点（§5.4 的 LLM Evidence Grader）。
+    """构建证据评分节点（LLM Evidence Grader）。
 
     规则先行的两级评分：规则能明确裁决（空证据/关键词命中）直接出结果，
     裁决不了才调 LLM 仲裁；llm 为 None 或评分调用失败时回退完整规则版。
@@ -586,7 +586,7 @@ def rewrite_query(state: DiagnosisState) -> dict:
     retry_count = state.get("retry_count", 0) + 1
 
     contents = "\n".join(item.content.lower() for item in state.get("evidence", []))
-    # 优先用评分给出的缺失关键词（§4.5：按失败原因改写）；评分器没给
+    # 优先用评分给出的缺失关键词（按失败原因改写）；评分器没给
     # 时退回规则推导的异常关键字。
     grade = state.get("grade")
     missing = [
@@ -692,7 +692,7 @@ def make_diagnose_node(llm):
             _emit("diagnosis_retrying", {"reason": "llm_error"})
             report = _invoke_structured(llm, DiagnosisReport, prompt)
 
-        # 引用自检（§4.6 审查前移）：引用了未检索到的证据 id 时，把问题
+        # 引用自检：引用了未检索到的证据 id 时，把问题
         # 喂回模型重试一次；仍失败则交由 review 节点如实标注。citations
         # 允许填 URL，因此只自检 supporting_evidence。
         evidence = state.get("evidence", [])
@@ -759,7 +759,7 @@ def _find_dangerous_commands(texts: list[str]) -> list[str]:
 
 
 def review(state: DiagnosisState) -> dict:
-    """确定性审查（§4.6）：引用一致性 + 危险命令 interrupt 人工确认。
+    """确定性审查：引用一致性 + 危险命令 interrupt 人工确认。
 
     危险命令两个来源：修复建议（模型输出），以及用户描述本身提出的
     危险操作（如"运维同事建议删卷"——建议即使写成警告语境，场景仍需

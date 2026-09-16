@@ -118,7 +118,7 @@ class FakeLLM:
         )
         self.grade = grade or EvidenceGrade(sufficient=True, reason="假评分：默认足够")
         self.grade_error = grade_error
-        # LLM 规划器（§4.5）：不配置 plan/plan_error 时规划调用抛错，
+        # LLM 规划器：不配置 plan/plan_error 时规划调用抛错，
         # plan 节点走规则回退——与真实 LLM 未注入/失败的行为一致。
         self.plan = plan
         self.plan_error = plan_error

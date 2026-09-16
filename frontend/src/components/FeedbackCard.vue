@@ -1,7 +1,7 @@
 <script setup>
 import { reactive, ref } from 'vue'
 
-// 用户反馈（§6.1）：星级 + 根因/解决方案确认或修正。
+// 用户反馈：星级 + 根因/解决方案确认或修正。
 const props = defineProps({ busy: { type: Boolean, default: false } })
 const emit = defineEmits(['submit'])
 

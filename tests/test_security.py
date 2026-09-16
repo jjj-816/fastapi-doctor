@@ -1,4 +1,4 @@
-"""脱敏规则单元测试（设计 §7：发送给模型或落库前遮蔽凭据）。"""
+"""脱敏规则单元测试：发送给模型或落库前遮蔽凭据。"""
 
 from fastapi_doctor.security import mask_secrets
 

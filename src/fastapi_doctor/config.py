@@ -45,20 +45,20 @@ MIN_PARENT_SIZE = 2_000
 MAX_PARENT_SIZE = 4_000
 HEADERS_TO_SPLIT_ON = [("#", "H1"), ("##", "H2"), ("###", "H3")]
 
-# 证据不足时的查询重写上限（设计 §4.5：所有回路都有明确上限）。
+# 证据不足时的查询重写上限（所有回路都有明确上限）。
 MAX_QUERY_REWRITES = 2
 
 # 单个检索计划的检索词数量上限（LLM 规划与规则版共用，防提示词预算失控）。
 MAX_PLAN_QUERIES = 3
 
-# 澄清回合上限：用户补充后仍缺信息则停止并保留待澄清状态（§4.2/§7）。
+# 澄清回合上限：用户补充后仍缺信息则停止并保留待澄清状态。
 MAX_CLARIFY_ROUNDS = 2
 
 # 送入诊断提示词的证据预算，控制小模型上下文占用。
 MAX_EVIDENCE_ITEMS = 8
 MAX_EVIDENCE_CHARS = 600
 
-# 审查节点扫描的危险命令片段（设计 §4.6：危险操作建议需先通过人工确认）。
+# 审查节点扫描的危险命令片段（危险操作建议需先通过人工确认）。
 DANGEROUS_COMMAND_PATTERNS = (
     "rm -rf",
     "rmdir /s",

@@ -53,7 +53,7 @@ class InvestigationPlan(BaseModel):
 
 
 class Evidence(BaseModel):
-    """一条检索证据：子块命中后扩展出的父块级上下文（§5.2）。"""
+    """一条检索证据：子块命中后扩展出的父块级上下文。"""
 
     doc_id: str
     parent_id: str
@@ -93,7 +93,7 @@ class Evidence(BaseModel):
 
 
 class TracebackInfo(BaseModel):
-    """analyze_traceback 提取的结构化异常信息（§4.4）。"""
+    """analyze_traceback 提取的结构化异常信息。"""
 
     exception_chain: list[str] = Field(default_factory=list)
     root_exception: str | None = None
@@ -104,7 +104,7 @@ class TracebackInfo(BaseModel):
 
 
 class EvidenceGrade(BaseModel):
-    """对当前证据集合的确定性评分结果（§4.5 的 MVP 规则版）。"""
+    """对当前证据集合的确定性评分结果（MVP 规则版）。"""
 
     sufficient: bool
     reason: str = ""
@@ -112,7 +112,7 @@ class EvidenceGrade(BaseModel):
 
 
 class DiagnosisReport(BaseModel):
-    """诊断节点输出（设计 §4.6），只允许基于引用证据下结论。"""
+    """诊断节点输出，只允许基于引用证据下结论。"""
 
     most_likely_cause: str
     confidence: float = Field(ge=0, le=1)

@@ -1,8 +1,8 @@
-"""分源混合检索（设计 §4.4 / §5.4）。
+"""分源混合检索。
 
 KnowledgeRetriever 是三个检索工具共用的底座：混合召回（Dense + BM25，由
 QdrantVectorStore 的 HYBRID 模式完成）-> source_type 元数据过滤 -> 父块扩展
--> 按 parent_id 去重。三个语义化封装对应 §4.4 的三个 search 工具。
+-> 按 parent_id 去重。三个语义化封装对应三个 search 工具。
 
 向量库与父块存储均可注入，测试用假 Embedding 与内存 Qdrant，不依赖 Ollama。
 """

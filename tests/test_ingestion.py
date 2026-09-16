@@ -1,6 +1,6 @@
 """离线导入命令的单元测试。
 
-全部使用假 Embedding 与内存 Qdrant，不依赖 Ollama 在线（§5.5 依赖隔离）。
+全部使用假 Embedding 与内存 Qdrant，不依赖 Ollama 在线。
 """
 
 import httpx

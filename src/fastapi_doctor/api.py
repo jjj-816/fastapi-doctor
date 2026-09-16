@@ -1,7 +1,7 @@
-"""FastAPI HTTP 入口（设计 §6.1）：异步任务 + SSE 事件 + 恢复 + 反馈。
+"""FastAPI HTTP 入口：异步任务 + SSE 事件 + 恢复 + 反馈。
 
-任务在进程内 asyncio 任务里经工作线程执行图（§6.1 的 MVP 形态）；事件
-先落库再实时推送，SSE 断线用 ?after=<seq> 或 Last-Event-ID 续播（§7）。
+任务在进程内 asyncio 任务里经工作线程执行图；事件
+先落库再实时推送，SSE 断线用 ?after=<seq> 或 Last-Event-ID 续播。
 进程重启不会恢复后台任务，README 需说明；生产环境应换持久化任务队列。
 """
 
@@ -236,7 +236,7 @@ async def stream_events(run_id: str, req: Request, after: int = 0) -> StreamingR
                 try:
                     event = await asyncio.wait_for(queue.get(), timeout=15.0)
                 except asyncio.TimeoutError:
-                    # 心跳（§7）：防止代理断开空闲连接。
+                    # 心跳：防止代理断开空闲连接。
                     yield ": ping\n\n"
                     continue
                 if event["seq"] <= seq:
@@ -266,7 +266,7 @@ def _sse(event: dict) -> str:
 
 @app.post("/api/runs/{run_id}/feedback")
 def submit_feedback(run_id: str, request: FeedbackRequest, req: Request) -> dict:
-    """提交根因与解决方案反馈（§6.1），用于后续评测与知识库补充。"""
+    """提交根因与解决方案反馈，用于后续评测与知识库补充。"""
     manager: RunManager = req.app.state.run_manager
     if manager.get_run(run_id) is None:
         raise HTTPException(status_code=404, detail="运行不存在")

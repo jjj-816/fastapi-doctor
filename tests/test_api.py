@@ -1,4 +1,4 @@
-"""HTTP 接口测试（设计 §8.1）：注入假检索器与假 LLM，不依赖真实索引。
+"""HTTP 接口测试：注入假检索器与假 LLM，不依赖真实索引。
 
 覆盖：创建任务、轮询状态、SSE 事件顺序、澄清恢复、危险确认、反馈、知识库视图。
 """
@@ -249,7 +249,7 @@ def test_sse_streams_event_sequence(monkeypatch, tmp_path, make_fake_retriever) 
 
 
 def test_sse_replay_of_resumed_run_reaches_terminal(monkeypatch, tmp_path, make_fake_retriever) -> None:
-    """回放含历史澄清的已完成运行：不得停在中途的暂停事件上（§6.3 回放完整性）。"""
+    """回放含历史澄清的已完成运行：不得停在中途的暂停事件上。"""
     client = make_client(monkeypatch, tmp_path, make_fake_retriever, FakeLLM())
     with client:
         run_id = client.post("/api/runs", json={"description": "接口出错了"}).json()["run_id"]

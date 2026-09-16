@@ -1,4 +1,4 @@
-"""知识库离线导入（设计文档 §5.5）。
+"""知识库离线导入。
 
 编排流程复用自学习项目的 DocumentManager：发现 Markdown -> 解析 frontmatter
 元数据 -> 父子分块 -> 父块写文件存储、子块写 Qdrant -> 输出质量报告。
@@ -67,7 +67,7 @@ class FileResult:
 
 @dataclass
 class ImportReport:
-    """一次导入的质量报告（§5.5 验收第 6 项）。"""
+    """一次导入的质量报告。"""
 
     source_dir: Path
     dry_run: bool
@@ -328,7 +328,7 @@ class KnowledgeImporter:
     def _build_quality(
         self, report: ImportReport, imported_chunks: list[tuple[FileResult, list, list]]
     ) -> None:
-        """汇总 §5.5 要求的六项质量指标。"""
+        """汇总导入结果的六项质量指标。"""
         content_hashes: dict[str, list[str]] = {}
         for result, parents, children in imported_chunks:
             report.total_parents += result.parents
@@ -413,7 +413,7 @@ def _print_progress(done: int, total: int, path: Path) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="导入知识库 Markdown 到父子块存储与 Qdrant（设计 §5.5）"
+        description="导入知识库 Markdown 到父子块存储与 Qdrant"
     )
     parser.add_argument(
         "--source-dir", type=Path, default=config.MARKDOWN_DIR, help="Markdown 根目录"

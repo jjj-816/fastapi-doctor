@@ -1,5 +1,5 @@
 <script setup>
-// 结构化诊断报告：结论、置信度、步骤、建议、引用与证据列表（§6.5）。
+// 结构化诊断报告：结论、置信度、步骤、建议、引用与证据列表。
 import { computed } from 'vue'
 import { SOURCE_LABELS } from '../api'
 
