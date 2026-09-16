@@ -304,7 +304,8 @@ def make_retrieve_node(retriever):
 
     确定性 MVP：对计划中的每个检索词，在三种来源上各召回最多
     PER_SOURCE_K 条证据，先按 parent_id 再按 doc 去重，按相关度分数
-    降序合并写入状态。后续将由 LLM 规划的查询与证据评分替代。
+    降序合并写入状态。证据跨改写轮次累积：改写只替换检索词，不淘汰
+    已有证据——否则首轮命中的高相关证据会被改写后变窄的检索词冲掉。
     """
 
     def retrieve(state: DiagnosisState) -> dict:
@@ -322,7 +323,10 @@ def make_retrieve_node(retriever):
                 "queries": queries,
             },
         )
-        merged: dict[str, Evidence] = {}
+        # 从上一轮证据出发合并（首轮为空）：同一父块保留更高分。
+        merged: dict[str, Evidence] = {
+            item.parent_id: item for item in state.get("evidence", [])
+        }
         for query in queries:
             for source_type in SourceType:
                 for evidence in retriever.search(query, source_type, k=PER_SOURCE_K):

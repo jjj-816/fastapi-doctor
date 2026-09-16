@@ -6,9 +6,15 @@
 
 from langgraph.types import Command
 
-from fastapi_doctor.domain.models import DiagnosisReport, EvidenceGrade, RunStatus
+from fastapi_doctor.domain.models import (
+    DiagnosisReport,
+    Evidence,
+    EvidenceGrade,
+    InvestigationPlan,
+    RunStatus,
+)
 from fastapi_doctor.graph.builder import build_diagnosis_graph
-from fastapi_doctor.graph.nodes import CLARIFY_SKIPPED_RESUME
+from fastapi_doctor.graph.nodes import CLARIFY_SKIPPED_RESUME, make_retrieve_node
 from tests.conftest import CASE_MD, FakeLLM
 
 TRACEBACK_LOGS = (
@@ -235,6 +241,47 @@ def test_grade_llm_failure_falls_back_to_rules(make_fake_retriever) -> None:
     assert result["grade"].sufficient is True
     assert result.get("retry_count", 0) == 0
     assert result["status"] == RunStatus.COMPLETED
+
+
+class ScriptedRetriever:
+    """按查询关键词返回不同证据的假检索器：验证改写轮不淘汰已有证据。"""
+
+    def search(self, query, source_type, k=None):
+        if "round1" in query:
+            return [
+                Evidence(
+                    doc_id="case-db",
+                    parent_id="case-db_p0",
+                    content="数据库连接失败案例",
+                    score=0.9,
+                    source_type="incident_case",
+                )
+            ]
+        return [
+            Evidence(
+                doc_id="cors-tutorial",
+                parent_id="cors-tutorial_p1",
+                content="CORS 配置教程",
+                score=0.6,
+                source_type="official_doc",
+            )
+        ]
+
+
+def test_retrieve_accumulates_evidence_across_rewrites() -> None:
+    """改写只替换检索词：首轮高相关证据必须保留进后续证据池。"""
+    retrieve = make_retrieve_node(ScriptedRetriever())
+    plan = InvestigationPlan(
+        hypotheses=[], search_queries=["round1 database"], verification_steps=[]
+    )
+    first = retrieve({"plan": plan})
+    assert [e.parent_id for e in first["evidence"]] == ["case-db_p0"]
+
+    rewritten = plan.model_copy(update={"search_queries": ["round2 cors"]})
+    second = retrieve({"plan": rewritten, "evidence": first["evidence"]})
+    ids = [e.parent_id for e in second["evidence"]]
+    # 按分数降序：首轮 0.9 分的证据仍在且排前，新轮证据并入其后。
+    assert ids == ["case-db_p0", "cors-tutorial_p1"]
 
 
 def test_review_flags_unknown_citation(make_fake_retriever) -> None:
