@@ -17,6 +17,7 @@ async function request(path, options = {}) {
     }
     throw new Error(detail)
   }
+  if (res.status === 204) return null
   return res.json()
 }
 
@@ -27,6 +28,7 @@ export const api = {
     request('/runs', { method: 'POST', body: JSON.stringify(payload) }),
   resumeRun: (runId, payload) =>
     request(`/runs/${runId}/resume`, { method: 'POST', body: JSON.stringify(payload) }),
+  deleteRun: (runId) => request(`/runs/${runId}`, { method: 'DELETE' }),
   sendFeedback: (runId, payload) =>
     request(`/runs/${runId}/feedback`, { method: 'POST', body: JSON.stringify(payload) }),
   listKbDocs: () => request('/kb/docs'),

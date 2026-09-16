@@ -58,6 +58,7 @@ def _build_graph():
         checkpointer = MemorySaver()
     retriever = KnowledgeRetriever()
     app.state.retriever = retriever
+    app.state.checkpointer = checkpointer
     return build_diagnosis_graph(
         retriever=retriever, llm=build_llm(), checkpointer=checkpointer
     )
@@ -68,6 +69,7 @@ async def lifespan(app: FastAPI):
     """启动时建运行管理器、图与父块存储；测试可替换 _build_graph 工厂注入假实现。"""
     app.state.run_manager = RunManager(config.APPLICATION_DB_PATH)
     app.state.run_manager.attach_loop(asyncio.get_running_loop())
+    app.state.run_manager.fail_stale_running()
     app.state.graph = _build_graph()
     # 显式传参：默认参数在导入时求值，运行时替换 config 路径（测试）不生效。
     app.state.parent_store = ParentStore(config.PARENT_STORE_PATH)
@@ -138,6 +140,23 @@ def get_run(run_id: str, req: Request) -> RunSnapshot:
         updated_at=row["updated_at"],
         result=result,
     )
+
+
+@app.delete("/api/runs/{run_id}", status_code=204)
+def delete_run(run_id: str, req: Request) -> Response:
+    """删除一次诊断运行（记录、事件与图检查点）；执行中的运行不允许删除。"""
+    manager: RunManager = req.app.state.run_manager
+    row = manager.get_run(run_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="运行不存在")
+    if row["status"] == RunStatus.RUNNING:
+        raise HTTPException(status_code=409, detail="运行进行中，暂不能删除")
+    manager.delete_run(run_id)
+    # thread_id 与 run_id 相同：一并清理图检查点，避免中断态残留。
+    checkpointer = getattr(req.app.state, "checkpointer", None)
+    if checkpointer is not None:
+        checkpointer.delete_thread(run_id)
+    return Response(status_code=204)
 
 
 @app.post("/api/runs/{run_id}/resume", response_model=RunCreated)

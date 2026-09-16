@@ -92,6 +92,20 @@ function resetSessionState() {
   feedbackDone.value = false
 }
 
+async function deleteRun(run) {
+  if (!confirm(`删除这条诊断记录？\n${(run.description || '（无描述）').slice(0, 50)}`)) return
+  try {
+    await api.deleteRun(run.run_id)
+    if (current.value?.id === run.run_id) {
+      resetSessionState()
+      current.value = null
+    }
+    refreshRuns()
+  } catch (e) {
+    alert(`删除失败：${e.message}`)
+  }
+}
+
 async function selectRun(run) {
   view.value = 'chat'
   resetSessionState()
@@ -201,6 +215,7 @@ onMounted(refreshRuns)
       :current-id="current?.id || ''"
       :view="view"
       @select="selectRun"
+      @delete="deleteRun"
       @kb="view = 'kb'"
       @new="
         () => {

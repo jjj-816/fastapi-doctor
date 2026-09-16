@@ -372,3 +372,49 @@ def test_resume_rejects_non_waiting_run(monkeypatch, tmp_path, make_fake_retriev
         )
 
     assert response.status_code == 409
+
+
+def test_delete_run_removes_history(monkeypatch, tmp_path, make_fake_retriever) -> None:
+    client = make_client(monkeypatch, tmp_path, make_fake_retriever, FakeLLM())
+    with client:
+        run_id = client.post(
+            "/api/runs",
+            json={"description": "待删除的诊断",
+                  "logs": "sqlalchemy OperationalError connection refused"},
+        ).json()["run_id"]
+        wait_for_status(client, run_id, "completed")
+
+        response = client.delete(f"/api/runs/{run_id}")
+
+        assert response.status_code == 204
+        assert client.get(f"/api/runs/{run_id}").status_code == 404
+        assert client.get("/api/runs").json() == []
+        # 记录已删除：再次删除按不存在处理
+        assert client.delete(f"/api/runs/{run_id}").status_code == 404
+
+
+def test_delete_rejects_running_run(monkeypatch, tmp_path, make_fake_retriever) -> None:
+    client = make_client(monkeypatch, tmp_path, make_fake_retriever, FakeLLM())
+    with client:
+        # 直接落一条进行中的记录（不启动图），验证删除保护
+        manager = client.app.state.run_manager
+        manager.create_run("run-active", "run-active", "进行中的诊断")
+
+        response = client.delete("/api/runs/run-active")
+
+    assert response.status_code == 409
+
+
+def test_fail_stale_running_marks_interrupted_runs_failed(tmp_path) -> None:
+    """进程重启后遗留的 running 行在启动时标记为失败（可删除、不再无限转圈）。"""
+    from fastapi_doctor.runs import RunManager
+
+    manager = RunManager(tmp_path / "app.db")
+    manager.create_run("run-stale", "run-stale", "重启前创建")
+
+    assert RunManager(tmp_path / "app.db").fail_stale_running() == 1
+    row = RunManager(tmp_path / "app.db").get_run("run-stale")
+    assert row["status"] == "failed"
+    assert "重启" in row["error"]
+    # 幂等：再次启动不再有可标记的行
+    assert RunManager(tmp_path / "app.db").fail_stale_running() == 0

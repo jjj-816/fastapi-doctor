@@ -163,10 +163,35 @@ input {
 }
 
 .history-desc {
+  /* 行内元素的 overflow:hidden 不生效，文本会撑破侧栏——必须块级化 */
+  display: block;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
   font-size: 13px;
+}
+
+.history-del {
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  line-height: 16px;
+  text-align: center;
+  border-radius: 4px;
+  color: #7a8296;
+  font-size: 14px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+
+.history-item:hover .history-del {
+  opacity: 1;
+}
+
+.history-del:hover {
+  background: #3a4356;
+  color: #ff6b6b;
 }
 
 .history-time {

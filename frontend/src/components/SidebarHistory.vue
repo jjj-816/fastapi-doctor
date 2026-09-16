@@ -7,7 +7,7 @@ defineProps({
   currentId: { type: String, default: '' },
   view: { type: String, default: 'chat' },
 })
-const emit = defineEmits(['select', 'new', 'kb'])
+const emit = defineEmits(['select', 'new', 'kb', 'delete'])
 
 function timeOf(iso) {
   try {
@@ -46,6 +46,7 @@ function timeOf(iso) {
           <span class="history-desc">{{ run.description || '（无描述）' }}</span>
         </span>
         <span class="history-time">{{ timeOf(run.created_at) }}</span>
+        <span class="history-del" title="删除这条记录" @click.stop="emit('delete', run)">×</span>
       </button>
       <div class="history-empty" v-if="!runs.length">还没有诊断记录</div>
     </div>

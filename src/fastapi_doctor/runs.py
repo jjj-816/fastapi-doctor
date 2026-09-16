@@ -153,6 +153,28 @@ class RunManager:
             for row in rows
         ]
 
+    def delete_run(self, run_id: str) -> bool:
+        """删除运行记录及其事件（侧栏删除用）；返回该运行是否存在过。"""
+        with self._lock, self._conn:
+            deleted = self._conn.execute(
+                "DELETE FROM runs WHERE run_id = ?", (run_id,)
+            ).rowcount
+            self._conn.execute("DELETE FROM events WHERE run_id = ?", (run_id,))
+        return deleted > 0
+
+    def fail_stale_running(self) -> int:
+        """进程重启后，之前进行中的运行不会再恢复（§6.1 MVP 无持久化任务队列）。
+
+        启动时统一标记为失败：侧栏不再无限「诊断中」，也允许用户删除。
+        """
+        with self._lock, self._conn:
+            cursor = self._conn.execute(
+                "UPDATE runs SET status = ?, error = ?, updated_at = ?"
+                " WHERE status = ?",
+                (RunStatus.FAILED, "进程重启，任务中断", _now(), RunStatus.RUNNING),
+            )
+        return cursor.rowcount
+
     # --- 事件 ---
 
     def emit(self, run_id: str, event_type: str, payload: dict) -> None:
