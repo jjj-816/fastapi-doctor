@@ -60,7 +60,7 @@ DANGEROUS_COMMAND_PATTERNS = (
     "rm -rf",
     "rmdir /s",
     "del /f",
-    "format ",
+    "format c:",
     "mkfs",
     "dd if=",
     "> /dev/sd",

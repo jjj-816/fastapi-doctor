@@ -661,14 +661,36 @@ def make_diagnose_node(llm):
     return diagnose
 
 
-def _find_dangerous_commands(suggestions: list[str]) -> list[str]:
-    """扫描修复建议中的危险命令片段。"""
+# 否定语境词：危险片段前方（同一子句内）出现时，是"警告别做"而非建议
+# 执行（如"不要用 docker volume rm 修复连接问题"），不应触发人工确认。
+_NEGATION_PATTERN = re.compile(
+    r"不要|切勿|避免|禁止|不应|不得|不能用|慎用|谨慎|拒绝|"
+    r"do not|don't|never|avoid",
+    re.IGNORECASE,
+)
+
+
+def _find_dangerous_commands(texts: list[str]) -> list[str]:
+    """扫描文本中的危险命令片段（按子句匹配，带否定语境豁免）。
+
+    以 。；\\n 切分出子句后逐个匹配：危险片段前方出现否定词的子句视为
+    警告语境，不算危险——曾把模型"不要用 docker volume rm 修复"的提醒
+    误当成危险建议（评测 E01）。
+    """
     dangerous = []
-    for suggestion in suggestions:
-        lowered = suggestion.lower()
-        for pattern in config.DANGEROUS_COMMAND_PATTERNS:
-            if pattern in lowered:
-                dangerous.append(suggestion)
+    for text in texts:
+        for clause in re.split(r"[。；\n]", text):
+            lowered = clause.lower()
+            hit = False
+            for pattern in config.DANGEROUS_COMMAND_PATTERNS:
+                for match in re.finditer(re.escape(pattern), lowered):
+                    if not _NEGATION_PATTERN.search(lowered[: match.start()]):
+                        hit = True
+                        break
+                if hit:
+                    break
+            if hit:
+                dangerous.append(text)
                 break
     return dangerous
 
@@ -676,9 +698,11 @@ def _find_dangerous_commands(suggestions: list[str]) -> list[str]:
 def review(state: DiagnosisState) -> dict:
     """确定性审查（§4.6）：引用一致性 + 危险命令 interrupt 人工确认。
 
-    含危险建议时通过 interrupt 暂停（第二类人工介入），resume 值为
-    {"approved": true/false}；批准后正常完成，拒绝则运行失败结束。
-    「证据问题返回检索节点」留待后续迭代。
+    危险命令两个来源：修复建议（模型输出），以及用户描述本身提出的
+    危险操作（如"运维同事建议删卷"——建议即使写成警告语境，场景仍需
+    人工确认）。含危险内容时通过 interrupt 暂停（第二类人工介入），
+    resume 值为 {"approved": true/false}；批准后正常完成，拒绝则运行
+    失败结束。「证据问题返回检索节点」留待后续迭代。
     """
     _emit("node_started", {"node": "review"})
     report = state["diagnosis"]
@@ -696,7 +720,9 @@ def review(state: DiagnosisState) -> dict:
     if evidence and not report.supporting_evidence:
         issues.append("已有检索证据，但结论未引用任何证据")
 
-    dangerous = _find_dangerous_commands(report.fix_suggestions)
+    dangerous = _find_dangerous_commands(
+        [*report.fix_suggestions, state["description"]]
+    )
 
     if dangerous:
         decision = interrupt(

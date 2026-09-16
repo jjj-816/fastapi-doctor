@@ -423,6 +423,86 @@ def test_dangerous_suggestion_pauses_for_confirmation(make_fake_retriever) -> No
     assert value["dangerous_commands"] == ["执行 docker volume rm db_data 后重建"]
 
 
+def test_negated_dangerous_warning_does_not_pause(make_fake_retriever) -> None:
+    """模型"警告不要执行 X"是否定语境，不是危险建议，不触发人工确认。"""
+    graph = build(
+        retriever=make_fake_retriever({"cases/case-db.md": CASE_MD}),
+        llm=FakeLLM(
+            report=DiagnosisReport(
+                most_likely_cause="连接配置错误",
+                confidence=0.8,
+                supporting_evidence=["case-db_p0"],
+                fix_suggestions=[
+                    "不要用 docker volume rm 等删除卷的方式修复连接问题",
+                    "把连接串中的 localhost 改为 compose 服务名",
+                ],
+            )
+        ),
+    )
+    result = graph.invoke(
+        {**INPUT, "logs": "sqlalchemy OperationalError connection refused"}, CONFIG
+    )
+
+    assert result["status"] == RunStatus.COMPLETED
+    assert result["review"].needs_confirmation is False
+
+
+def test_mixed_clause_suggestion_still_pauses(make_fake_retriever) -> None:
+    """同一条建议里警告子句不豁免其他子句的真实建议。"""
+    graph = build(
+        retriever=make_fake_retriever({"cases/case-db.md": CASE_MD}),
+        llm=FakeLLM(
+            report=DiagnosisReport(
+                most_likely_cause="数据卷损坏",
+                confidence=0.7,
+                supporting_evidence=["case-db_p0"],
+                fix_suggestions=["先备份数据；确认后执行 docker volume rm db_data 重建"],
+            )
+        ),
+    )
+    paused = graph.invoke(
+        {**INPUT, "logs": "sqlalchemy OperationalError connection refused"}, CONFIG
+    )
+
+    assert "__interrupt__" in paused
+    value = paused["__interrupt__"][0].value
+    assert value["dangerous_commands"] == [
+        "先备份数据；确认后执行 docker volume rm db_data 重建"
+    ]
+
+
+def test_dangerous_operation_in_user_description_pauses(make_fake_retriever) -> None:
+    """用户场景本身提出危险操作时也需人工确认——即使建议全部是否定警告。"""
+    graph = build(
+        retriever=make_fake_retriever({"cases/case-db.md": CASE_MD}),
+        llm=FakeLLM(
+            report=DiagnosisReport(
+                most_likely_cause="数据库卷可能损坏",
+                confidence=0.7,
+                supporting_evidence=["case-db_p0"],
+                fix_suggestions=["切勿执行 docker volume rm，先从日志找根因"],
+            )
+        ),
+    )
+    paused = graph.invoke(
+        {
+            **INPUT,
+            "description": "运维同事建议执行 docker volume rm 清空数据卷尝试修复",
+            "logs": "sqlalchemy OperationalError connection refused",
+        },
+        CONFIG,
+    )
+
+    assert "__interrupt__" in paused
+    value = paused["__interrupt__"][0].value
+    assert value["type"] == "confirmation"
+    # 危险清单同时包含用户描述（场景危险）——建议是警告语境不算。
+    assert "运维同事建议执行 docker volume rm 清空数据卷尝试修复" in value[
+        "dangerous_commands"
+    ]
+    assert all("切勿" not in item for item in value["dangerous_commands"])
+
+
 def test_confirmation_approve_completes_reject_fails(make_fake_retriever) -> None:
     llm = FakeLLM(
         report=DiagnosisReport(
