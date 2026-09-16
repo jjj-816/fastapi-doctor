@@ -12,9 +12,14 @@ from fastapi_doctor.domain.models import (
     EvidenceGrade,
     InvestigationPlan,
     RunStatus,
+    TracebackInfo,
 )
 from fastapi_doctor.graph.builder import build_diagnosis_graph
-from fastapi_doctor.graph.nodes import CLARIFY_SKIPPED_RESUME, make_retrieve_node
+from fastapi_doctor.graph.nodes import (
+    CLARIFY_SKIPPED_RESUME,
+    _rule_decisive_grade,
+    make_retrieve_node,
+)
 from tests.conftest import CASE_MD, FakeLLM
 
 TRACEBACK_LOGS = (
@@ -248,6 +253,57 @@ def test_grade_llm_failure_falls_back_to_rules(make_fake_retriever) -> None:
     assert result["status"] == RunStatus.COMPLETED
 
 
+def test_rule_decisive_grade_skips_llm_call(make_fake_retriever) -> None:
+    """规则能明确裁决时（关键词命中）直接出评分，省一次 LLM 往返。"""
+    llm = FakeLLM()
+    graph = build(
+        retriever=make_fake_retriever({"cases/case-db.md": CASE_MD}), llm=llm
+    )
+    result = graph.invoke({**INPUT, "logs": TRACEBACK_LOGS}, CONFIG)
+
+    # prompts = [规划（失败回退规则）, 诊断]——评分没走 LLM。
+    assert len(llm.prompts) == 2
+    assert result["grade"].sufficient is True
+    assert "异常类名" in result["grade"].reason
+    assert result["status"] == RunStatus.COMPLETED
+
+
+def test_rule_decisive_grade_defers_ambiguous_cases() -> None:
+    """无关键字或关键字未命中时规则不裁决（返回 None），交 LLM 仲裁。"""
+    tb = TracebackInfo(
+        root_exception="sqlalchemy.exc.OperationalError",
+        root_message="connection to server failed: Connection refused",
+    )
+    # 无证据：规则直接判不足（重写检索词即可，无需模型）。
+    empty = _rule_decisive_grade({"evidence": [], "traceback_info": tb})
+    assert empty is not None and empty.sufficient is False
+    # 有关键字但证据词面未命中：规则不裁决。
+    from fastapi_doctor.domain.models import Evidence as EvidenceModel
+
+    def _ev(content: str) -> EvidenceModel:
+        return EvidenceModel(
+            doc_id="d",
+            parent_id="d_p0",
+            content=content,
+            score=0.5,
+            source_type="official_doc",
+        )
+
+    ambiguous = _rule_decisive_grade(
+        {"evidence": [_ev("完全无关的内容")], "traceback_info": tb}
+    )
+    assert ambiguous is None
+    # 仅消息泛词命中（reached/number 之类）不足以裁决：SQLAlchemy 文档
+    # 含这些词，Redis 故障会被误判"足够"而绕过诚实降级。
+    token_only = _rule_decisive_grade(
+        {"evidence": [_ev("QueuePool limit reached after a number of tries")],
+         "traceback_info": tb}
+    )
+    assert token_only is None
+    # 无异常关键字（解释型提问）：规则不裁决。
+    assert _rule_decisive_grade({"evidence": [], "traceback_info": TracebackInfo()}) is not None
+
+
 def test_llm_planner_drives_queries_when_available(make_fake_retriever) -> None:
     """LLM 规划可用时，检索词与假设来自 LLM 计划，规则精确词保底并入末位。"""
     llm_plan = InvestigationPlan(
@@ -398,8 +454,9 @@ def test_diagnose_retries_once_on_invalid_citation(make_fake_retriever) -> None:
     )
 
     # 重试一次后引用合法：review 通过，诊断采用第二次输出。
-    # prompts = [规划（未配置 plan，失败回退规则）, 评分, 首次诊断, 重试诊断]。
-    assert len(llm.prompts) == 4
+    # prompts = [规划（未配置 plan，失败回退规则）, 首次诊断, 重试诊断]——
+    # 评分由规则直接裁决（关键词命中），不占 LLM 调用。
+    assert len(llm.prompts) == 3
     assert "未检索到的证据 id" in llm.prompts[-1]
     assert result["diagnosis"].supporting_evidence == ["case-db_p0"]
     assert result["review"].passed is True
@@ -414,8 +471,8 @@ def test_diagnose_survives_transient_llm_error(make_fake_retriever) -> None:
     )
     result = graph.invoke({**INPUT, "logs": TRACEBACK_LOGS}, CONFIG)
 
-    # 规划(失败回退) + 评分 + 诊断(失败) + 诊断重试。
-    assert len(llm.prompts) == 4
+    # 规划(失败回退) + 诊断(失败) + 诊断重试——评分由规则直接裁决。
+    assert len(llm.prompts) == 3
     assert result["diagnosis"].most_likely_cause
     assert result["status"] == RunStatus.COMPLETED
 

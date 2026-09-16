@@ -519,17 +519,51 @@ def build_grade_prompt(state: DiagnosisState) -> str:
     )
 
 
+def _rule_decisive_grade(state: DiagnosisState) -> EvidenceGrade | None:
+    """规则能明确裁决时给出评分，裁决不了返回 None 交 LLM 仲裁。
+
+    明确不足：没有检索到任何证据（重写检索词即可，无需模型判断）。
+    明确足够：日志的**异常类名**在证据词面命中——类名是强信号（问
+    OperationalError 检索到讲 OperationalError 的文档，基本不会错）；
+    消息词不算数：SQLAlchemy 池案例里的 reached/number 之类泛词命中
+    会把 Redis 等跨技术故障误判成"足够"，绕过诚实降级。
+    其余情况（无异常类名、类名未命中）规则难以区分"证据无关"与
+    "表述不同"，交给 LLM。评分是每轮都跑的节点，规则裁掉一次就省
+    一次 LLM 往返——与参考项目的耗时差距主要就在调用次数上。
+    """
+    evidence = state.get("evidence", [])
+    if not evidence:
+        return EvidenceGrade(
+            sufficient=False,
+            reason="未检索到任何证据",
+            missing_terms=_grade_needles(
+                state.get("traceback_info") or TracebackInfo()
+            )[:3],
+        )
+    traceback_info = state.get("traceback_info") or TracebackInfo()
+    if traceback_info.root_exception:
+        class_name = traceback_info.root_exception.rsplit(".", 1)[-1].lower()
+        contents = [item.content.lower() for item in evidence]
+        if any(class_name in content for content in contents):
+            return EvidenceGrade(
+                sufficient=True,
+                reason=f"证据包含异常类名 {class_name}（规则裁决）",
+            )
+    return None
+
+
 def make_grade_node(llm):
     """构建证据评分节点（§5.4 的 LLM Evidence Grader）。
 
-    llm 为 None 或评分调用失败时回退规则版评分，保证回路不中断；
+    规则先行的两级评分：规则能明确裁决（空证据/关键词命中）直接出结果，
+    裁决不了才调 LLM 仲裁；llm 为 None 或评分调用失败时回退完整规则版。
     评分给出的 missing_terms 会传给 rewrite_query 改写检索词。
     """
 
     def grade_evidence(state: DiagnosisState) -> dict:
         _emit("node_started", {"node": "grade_evidence"})
-        grade = None
-        if llm is not None:
+        grade = _rule_decisive_grade(state)
+        if grade is None and llm is not None:
             try:
                 grade = _invoke_structured(
                     llm, EvidenceGrade, build_grade_prompt(state)
@@ -634,6 +668,8 @@ def build_diagnosis_prompt(state: DiagnosisState) -> str:
         "investigation_steps（排查步骤）、fix_suggestions（修复建议）、"
         "verification（验证方法）、alternative_causes（替代原因）、"
         "citations（参考资料列表，只填证据块的来源 URL 或 doc_id）。\n"
+        "输出尽量精炼：investigation_steps、fix_suggestions、"
+        "alternative_causes 各不超过 3 条，每条一两句话（输出越长等待越久）。\n"
         "supporting_evidence 只能从以下 parent_id 列表选取，citations 只能"
         "从以下 doc_id 列表选取，禁止编造列表之外的 id：\n"
         f"parent_id: {', '.join(parent_ids) or '（无）'}\n"
