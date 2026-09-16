@@ -36,6 +36,10 @@ class DiagnosisState(TypedDict):
     retry_count: NotRequired[int]
     clarify_rounds: NotRequired[int]
     resumed: NotRequired[bool]
+    # 澄清回合用户留空（没有）的字段与回答的组件阶段：留空项不再追问，
+    # 组件回答在重新分析时优先于关键词推断。
+    clarify_declined: NotRequired[list[str]]
+    component_answer: NotRequired[str]
     diagnosis: NotRequired[DiagnosisReport]
     review: NotRequired[ReviewResult]
     error: NotRequired[str]

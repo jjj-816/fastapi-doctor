@@ -28,6 +28,7 @@ from fastapi_doctor.domain.models import (
     RunSummary,
 )
 from fastapi_doctor.graph.builder import build_diagnosis_graph
+from fastapi_doctor.graph.nodes import CLARIFY_SKIPPED_RESUME
 from fastapi_doctor.ingestion import IngestionError, KnowledgeImporter, OllamaUnavailableError
 from fastapi_doctor.llm import build_llm
 from fastapi_doctor.pdf_ingest import has_extractable_text, pdf_bytes_to_markdown
@@ -149,7 +150,9 @@ async def resume_run(run_id: str, request: RunResumeRequest, req: Request) -> Ru
 
     status = row["status"]
     if status == RunStatus.WAITING_CLARIFICATION:
-        resume_value: dict = request.answers
+        # 空 answers 表示用户跳过澄清：LangGraph 把空 dict 的 resume 值当作
+        # "没有恢复值"（interrupt 原样再抛），用哨兵占位。
+        resume_value: dict = request.answers or CLARIFY_SKIPPED_RESUME
     elif status == RunStatus.WAITING_CONFIRMATION:
         if request.approved is None:
             raise HTTPException(

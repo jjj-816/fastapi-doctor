@@ -56,6 +56,22 @@ def _invoke_structured(llm, schema, prompt):
     return structured.invoke(prompt)
 
 
+# 解释型提问的标志词：寻求原理或做法说明，而非报告一个可复现的故障现场。
+# 这类问题通常没有 traceback 可粘贴，不应追问日志；"怎么办/怎么解决"也
+# 算在内——没有日志时凭描述检索知识库作答，好过反复追问卡住用户。
+_EXPLANATION_PATTERN = re.compile(
+    r"为什么|什么原因|原因是什么|怎么回事|原理|如何|怎么|怎样"
+    r"|什么区别|区别是什么|有何区别|正确做法|应该怎么|该怎么|能不能|可以吗|是否可以"
+    r"|\bwhy\b|\bhow\b",
+    re.IGNORECASE,
+)
+
+
+def _is_explanation_question(description: str) -> bool:
+    """判断描述是否为解释型提问；这类问题不追问 traceback。"""
+    return bool(_EXPLANATION_PATTERN.search(description))
+
+
 def analyze_input(state: DiagnosisState) -> dict:
     """从原始输入中提取框架、组件、HTTP 状态码和缺失信息。
 
@@ -71,21 +87,34 @@ def analyze_input(state: DiagnosisState) -> dict:
     # 提不到 "fastapi"（只说 Uvicorn、数据库等）不应触发澄清。
     framework = "fastapi"
 
-    component = None
-    if any(token in text for token in ("postgres", "sqlalchemy", "database", "数据库")):
-        component = "database"
-    elif any(token in text for token in ("uvicorn", "启动", "startup")):
-        component = "startup"
-    elif any(token in text for token in ("async", "await", "异步")):
-        component = "asyncio"
-    elif http_status is not None:
-        component = "http_api"
+    component = state.get("component_answer") or None
+    if component is None:
+        if any(token in text for token in ("postgres", "sqlalchemy", "database", "数据库")):
+            component = "database"
+        elif any(token in text for token in ("uvicorn", "启动", "startup")):
+            component = "startup"
+        elif any(token in text for token in ("async", "await", "异步")):
+            component = "asyncio"
+        elif any(
+            token in text
+            for token in ("middleware", "中间件", "cors", "跨域", "响应头", "请求头")
+        ):
+            # 中间件、CORS、自定义请求/响应头等问题属于请求处理阶段。
+            component = "http_api"
+        elif http_status is not None:
+            component = "http_api"
 
     missing_information = []
     if component is None:
         missing_information.append("component")
-    if not inputs["logs"].strip():
+    # 解释型提问没有可粘贴的故障现场，不追问日志；用户在澄清回合明确
+    # 跳过（留空）的字段也不再重复追问。
+    if not inputs["logs"].strip() and not _is_explanation_question(
+        inputs["description"]
+    ):
         missing_information.append("logs")
+    declined = set(state.get("clarify_declined", []))
+    missing_information = [item for item in missing_information if item not in declined]
 
     traceback_info = analyze_traceback(inputs["logs"])
     fault_info = FaultInfo(
@@ -106,16 +135,23 @@ def analyze_input(state: DiagnosisState) -> dict:
 
 CLARIFY_QUESTIONS = {
     "component": "故障发生在启动、请求处理、异步任务还是数据库访问阶段？",
-    "logs": "请提供完整异常类型和 traceback 的最后 20 行。",
+    "logs": "如有报错日志，请粘贴异常类型和 traceback 最后 20 行（没有可留空）。",
 }
+
+# 用户全部留空（跳过澄清）时的 resume 占位：LangGraph 把空 dict 的 resume
+# 值当作"没有恢复值"，interrupt 会原样再抛，必须用非空 dict 占位；键名
+# 不与字段名冲突，澄清节点将其视为所有字段都留空。
+CLARIFY_SKIPPED_RESUME = {"_skipped": True}
 
 
 def clarify_if_needed(state: DiagnosisState) -> dict:
     """信息不足时通过 interrupt 暂停等待用户补充（第一类人工介入）。
 
-    resume 值是 {description/logs/code/config: 补充文本} 的字典；节点把
-    补充内容脱敏后并入输入，路由回 analyze_input 重新分析。补满或达到
-    轮次上限（MAX_CLARIFY_ROUNDS）才放行/结束。
+    resume 值是 {字段名: 补充文本} 的字典（component 也在此列）；留空的
+    字段记入 clarify_declined 不再追问。全部留空时传 CLARIFY_SKIPPED_RESUME
+    占位（空 dict 会被 LangGraph 当作无恢复值）。补充内容脱敏后并入输入，
+    路由回 analyze_input 重新分析；补满、跳过或达到轮次上限
+    （MAX_CLARIFY_ROUNDS）才放行/结束。
     """
     _emit("node_started", {"node": "clarify_if_needed"})
     missing = state["fault_info"].missing_information
@@ -147,9 +183,13 @@ def clarify_if_needed(state: DiagnosisState) -> dict:
             "round": rounds + 1,
         }
     )
+    # 留空的字段视为"用户没有该信息"：记录后后续轮次不再重复追问，
+    # 而是凭现有信息继续诊断，避免反复追问卡住用户。
+    declined = [item for item in missing if not (answers or {}).get(item)]
     updates: dict = {
         "clarification_questions": questions,
         "clarify_rounds": rounds + 1,
+        "clarify_declined": [*state.get("clarify_declined", []), *declined],
         "resumed": True,
         "status": RunStatus.RUNNING,
     }
@@ -157,6 +197,11 @@ def clarify_if_needed(state: DiagnosisState) -> dict:
         value = (answers or {}).get(key)
         if value:
             updates[key] = mask_secrets(str(value))
+    # "component" 不在四项输入里：用户回答的阶段单独入状态，
+    # analyze_input 重新分析时优先采用（否则回答会被静默丢弃）。
+    component_answer = (answers or {}).get("component")
+    if component_answer:
+        updates["component_answer"] = mask_secrets(str(component_answer))
     return updates
 
 
@@ -191,6 +236,9 @@ def plan(state: DiagnosisState) -> dict:
         # 无异常栈时（curl 报错、ValidationError 片段等），日志最后一行通常
         # 是错误行；取其中的英文关键词追加精确词，补 BM25 的强项。
         queries = _append_log_tail_query(queries, state["logs"])
+        if not state["logs"].strip():
+            # 连日志都没有（解释型提问、用户跳过澄清）时，描述是唯一信息源。
+            queries = _append_description_query(queries, state["description"])
 
     plan = InvestigationPlan(
         hypotheses=[f"检查 {fault.component or '应用'} 的输入、配置与运行环境"],
@@ -222,6 +270,23 @@ def _append_log_tail_query(queries: list[str], logs: str) -> list[str]:
     log_query = " ".join(tokens)
     if log_query and log_query not in queries:
         queries.append(log_query)
+    return queries
+
+
+def _append_description_query(queries: list[str], description: str) -> list[str]:
+    """无日志时从描述里提取英文/数字关键词，追加一条精确检索词。
+
+    解释型提问（为什么/如何）没有日志可提，描述里的 middleware、CORS、
+    异常类名等词是召回上传文档与案例的主要线索。
+    """
+    tokens = [
+        token.lower()
+        for token in re.findall(r"[A-Za-z0-9][\w.-]{2,}", description)
+        if token.lower() not in _LOG_STOPWORDS
+    ][:_LOG_QUERY_MAX_TOKENS]
+    description_query = " ".join(tokens)
+    if description_query and description_query not in queries:
+        queries.append(description_query)
     return queries
 
 

@@ -269,6 +269,25 @@ def test_clarification_pause_and_resume(monkeypatch, tmp_path, make_fake_retriev
     assert snapshot["status"] == "completed"
 
 
+def test_clarification_skip_proceeds(monkeypatch, tmp_path, make_fake_retriever) -> None:
+    """澄清回合允许跳过：空 answers 视为没有该信息，直接继续诊断。"""
+    client = make_client(monkeypatch, tmp_path, make_fake_retriever, FakeLLM())
+    with client:
+        run_id = client.post(
+            "/api/runs", json={"description": "接口出错了"}
+        ).json()["run_id"]
+        snapshot = wait_for_status(
+            client, run_id, "waiting_clarification", "completed", timeout=5.0
+        )
+        if snapshot["status"] == "waiting_clarification":
+            assert client.post(
+                f"/api/runs/{run_id}/resume", json={"answers": {}}
+            ).status_code == 200
+            snapshot = wait_for_status(client, run_id, "completed", "failed")
+
+    assert snapshot["status"] == "completed"
+
+
 def test_dangerous_confirmation_flow(monkeypatch, tmp_path, make_fake_retriever) -> None:
     client = make_client(monkeypatch, tmp_path, make_fake_retriever, FakeLLM(DANGER_REPORT))
     with client:

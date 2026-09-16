@@ -131,9 +131,11 @@ async function resumeClarify(answers) {
   try {
     await api.resumeRun(current.value.id, { answers })
     supplements.value.push(
-      Object.entries(answers)
-        .map(([k, v]) => `[${k}] ${v}`)
-        .join('\n')
+      Object.keys(answers).length
+        ? Object.entries(answers)
+            .map(([k, v]) => `[${k}] ${v}`)
+            .join('\n')
+        : '跳过补充，直接继续诊断'
     )
     await loadSnapshot(current.value.id)
     openStream(current.value.id, lastSeq.value)

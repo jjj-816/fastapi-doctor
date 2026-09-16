@@ -8,6 +8,7 @@ from langgraph.types import Command
 
 from fastapi_doctor.domain.models import DiagnosisReport, EvidenceGrade, RunStatus
 from fastapi_doctor.graph.builder import build_diagnosis_graph
+from fastapi_doctor.graph.nodes import CLARIFY_SKIPPED_RESUME
 from tests.conftest import CASE_MD, FakeLLM
 
 TRACEBACK_LOGS = (
@@ -99,6 +100,64 @@ def test_clarification_resume_reanalyzes_and_completes(
     assert resumed["fault_info"].component == "database"
     # 第二轮经过澄清节点（信息已补齐）不得清空第一轮记录的问题。
     assert len(resumed["clarification_questions"]) == 2
+
+
+def test_component_answer_is_kept_and_unanswered_fields_skipped(
+    make_fake_retriever, fake_llm
+) -> None:
+    """用户只回答阶段、留空日志：回答必须生效，留空项不再重复追问。"""
+    graph = build(
+        retriever=make_fake_retriever({"cases/case-db.md": CASE_MD}), llm=fake_llm
+    )
+    graph.invoke({**INPUT, "description": "接口出错了"}, CONFIG)
+    resumed = graph.invoke(Command(resume={"component": "请求处理"}), CONFIG)
+
+    assert resumed["status"] == RunStatus.COMPLETED
+    assert resumed["clarify_rounds"] == 1  # 没有把同样的问题再问一轮
+    assert resumed["fault_info"].component == "请求处理"  # 用户回答优先于关键词推断
+    assert resumed["clarify_declined"] == ["logs"]
+
+
+def test_explanation_question_runs_without_clarification(
+    make_fake_retriever, fake_llm
+) -> None:
+    """解释型提问（为什么/如何）不追问 traceback，凭描述直接检索诊断。"""
+    graph = build(
+        retriever=make_fake_retriever({"cases/case-db.md": CASE_MD}), llm=fake_llm
+    )
+    result = graph.invoke(
+        {
+            **INPUT,
+            "description": (
+                '我在 FastAPI 中用 @app.middleware("http") 给响应添加了自定义'
+                "响应头 X-Process-Time，浏览器跨域请求（CORS）时读不到它，为什么？"
+            ),
+        },
+        CONFIG,
+    )
+
+    assert "__interrupt__" not in result
+    # 中间件/跨域/响应头描述可识别为请求处理阶段，无需再问。
+    assert result["fault_info"].component == "http_api"
+    assert result["clarification_questions"] == []
+    assert result["status"] == RunStatus.COMPLETED
+    # 无日志时描述关键词参与检索词，保证仅凭描述也能召回证据。
+    assert any("cors" in query for query in result["plan"].search_queries)
+
+
+def test_clarify_skip_proceeds_without_reasking(make_fake_retriever, fake_llm) -> None:
+    """澄清回合全部留空（跳过）时不再重复追问，凭现有信息继续诊断。"""
+    graph = build(
+        retriever=make_fake_retriever({"cases/case-db.md": CASE_MD}), llm=fake_llm
+    )
+    graph.invoke({**INPUT, "description": "接口出错了"}, CONFIG)
+    # 注意不能传空 dict：LangGraph 把它当作"没有恢复值"，interrupt 原样
+    # 再抛；跳过必须用非空哨兵占位（API 层同样如此）。
+    resumed = graph.invoke(Command(resume=CLARIFY_SKIPPED_RESUME), CONFIG)
+
+    assert resumed["status"] == RunStatus.COMPLETED
+    assert resumed["clarify_rounds"] == 1
+    assert resumed["clarify_declined"] == ["component", "logs"]
 
 
 def test_traceback_feeds_queries_and_grade(make_fake_retriever, fake_llm) -> None:

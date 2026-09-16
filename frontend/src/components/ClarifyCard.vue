@@ -11,9 +11,9 @@ const emit = defineEmits(['submit'])
 
 const FIELD_HINTS = {
   component: '例如：数据库访问 / 启动阶段 / 请求处理 / 异步任务',
-  logs: '粘贴完整异常类型和 traceback 最后 20 行',
-  code: '粘贴相关代码片段',
-  config: '粘贴脱敏后的相关配置',
+  logs: '粘贴异常类型和 traceback 最后 20 行，没有可留空',
+  code: '粘贴相关代码片段，没有可留空',
+  config: '粘贴脱敏后的相关配置，没有可留空',
 }
 
 const answers = reactive({})
@@ -33,6 +33,11 @@ function submit() {
   if (Object.keys(filled).length === 0) return
   emit('submit', filled)
 }
+
+// 全部留空跳过：后端把这些字段记为"没有该信息"，不再重复追问。
+function skip() {
+  emit('submit', {})
+}
 </script>
 
 <template>
@@ -51,6 +56,7 @@ function submit() {
     </div>
     <div class="btn-row">
       <button class="btn-primary" :disabled="busy" @click="submit">提交并继续诊断</button>
+      <button class="btn-safe" :disabled="busy" @click="skip">没有这些信息，跳过继续</button>
     </div>
   </div>
 </template>
