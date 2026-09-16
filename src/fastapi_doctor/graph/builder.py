@@ -16,8 +16,8 @@ from fastapi_doctor.graph.nodes import (
     clarify_if_needed,
     make_diagnose_node,
     make_grade_node,
+    make_plan_node,
     make_retrieve_node,
-    plan,
     rewrite_query,
     review,
     route_after_clarification,
@@ -42,7 +42,7 @@ def build_diagnosis_graph(
     builder = StateGraph(DiagnosisState)
     builder.add_node("analyze_input", analyze_input)
     builder.add_node("clarify_if_needed", clarify_if_needed)
-    builder.add_node("plan", plan)
+    builder.add_node("plan", make_plan_node(llm))
     builder.add_node("retrieve", make_retrieve_node(retriever or KnowledgeRetriever()))
     builder.add_node("grade_evidence", make_grade_node(llm))
     builder.add_node("rewrite_query", rewrite_query)

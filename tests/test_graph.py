@@ -243,6 +243,71 @@ def test_grade_llm_failure_falls_back_to_rules(make_fake_retriever) -> None:
     assert result["status"] == RunStatus.COMPLETED
 
 
+def test_llm_planner_drives_queries_when_available(make_fake_retriever) -> None:
+    """LLM 规划可用时，检索词与假设来自 LLM 计划，规则精确词保底并入末位。"""
+    llm_plan = InvestigationPlan(
+        hypotheses=["CORS 白名单未包含自定义响应头"],
+        search_queries=["fastapi middleware expose headers", "x-process-time cors"],
+        verification_steps=["浏览器控制台复查响应头"],
+    )
+    graph = build(
+        retriever=make_fake_retriever({"cases/case-db.md": CASE_MD}),
+        llm=FakeLLM(plan=llm_plan),
+    )
+    result = graph.invoke({**INPUT, "logs": TRACEBACK_LOGS}, CONFIG)
+
+    queries = result["plan"].search_queries
+    assert queries[:2] == llm_plan.search_queries
+    assert len(queries) == 3
+    # 末位是规则精确词（异常类名 + 原始报错），不因 LLM 规划而丢失。
+    assert "OperationalError" in queries[2]
+    assert result["plan"].hypotheses == ["CORS 白名单未包含自定义响应头"]
+    assert result["status"] == RunStatus.COMPLETED
+
+
+def test_plan_reserves_slot_for_rule_precise_query(make_fake_retriever) -> None:
+    """LLM 给满检索词时也保留规则精确词：日志原文词是 BM25 命中的关键。"""
+    llm_plan = InvestigationPlan(
+        hypotheses=["端口映射缺失"],
+        search_queries=["docker port mapping", "uvicorn 0.0.0.0", "container ports"],
+        verification_steps=["docker ps 复查 PORTS 列"],
+    )
+    graph = build(
+        retriever=make_fake_retriever({"cases/case-db.md": CASE_MD}),
+        llm=FakeLLM(plan=llm_plan),
+    )
+    result = graph.invoke(
+        {
+            **INPUT,
+            "description": "宿主机 curl localhost:8000 连接被拒",
+            "logs": "INFO:     Uvicorn running on http://0.0.0.0:8000\n"
+            "curl: (7) Failed to connect to localhost port 8000: Connection refused",
+        },
+        CONFIG,
+    )
+
+    queries = result["plan"].search_queries
+    assert len(queries) == 3
+    assert queries[:2] == llm_plan.search_queries[:2]  # LLM 前 2 条保留
+    # 末位换成日志尾行原文词，LLM 的第 3 条改写词被挤出。
+    assert queries[2] != llm_plan.search_queries[2]
+    assert "connection" in queries[2] and "refused" in queries[2]
+
+
+def test_plan_falls_back_to_rules_when_llm_fails(make_fake_retriever) -> None:
+    """LLM 规划失败时回退规则版：宽泛词 + 异常精确词两条检索词。"""
+    graph = build(
+        retriever=make_fake_retriever({"cases/case-db.md": CASE_MD}),
+        llm=FakeLLM(plan_error=RuntimeError("planner unavailable")),
+    )
+    result = graph.invoke({**INPUT, "logs": TRACEBACK_LOGS}, CONFIG)
+
+    assert len(result["plan"].search_queries) == 2
+    assert "OperationalError" in result["plan"].search_queries[1]
+    assert result["fault_info"].component == "database"
+    assert result["status"] == RunStatus.COMPLETED
+
+
 class ScriptedRetriever:
     """按查询关键词返回不同证据的假检索器：验证改写轮不淘汰已有证据。"""
 
@@ -328,8 +393,8 @@ def test_diagnose_retries_once_on_invalid_citation(make_fake_retriever) -> None:
     )
 
     # 重试一次后引用合法：review 通过，诊断采用第二次输出。
-    # prompts = [评分, 首次诊断, 重试诊断]。
-    assert len(llm.prompts) == 3
+    # prompts = [规划（未配置 plan，失败回退规则）, 评分, 首次诊断, 重试诊断]。
+    assert len(llm.prompts) == 4
     assert "未检索到的证据 id" in llm.prompts[-1]
     assert result["diagnosis"].supporting_evidence == ["case-db_p0"]
     assert result["review"].passed is True

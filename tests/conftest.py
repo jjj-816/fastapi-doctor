@@ -3,7 +3,7 @@
 import pytest
 from langchain_core.embeddings import DeterministicFakeEmbedding
 
-from fastapi_doctor.domain.models import DiagnosisReport, EvidenceGrade
+from fastapi_doctor.domain.models import DiagnosisReport, EvidenceGrade, InvestigationPlan
 from fastapi_doctor.ingestion import KnowledgeImporter
 from fastapi_doctor.retrieval.parent_store import ParentStore
 from fastapi_doctor.retrieval.retriever import KnowledgeRetriever
@@ -102,6 +102,8 @@ class FakeLLM:
         grade: EvidenceGrade | None = None,
         grade_error: Exception | None = None,
         reports: list[DiagnosisReport] | None = None,
+        plan: InvestigationPlan | None = None,
+        plan_error: Exception | None = None,
     ):
         self.report = report or DiagnosisReport(
             most_likely_cause="容器内 localhost 指向容器自身，数据库不可达",
@@ -115,6 +117,10 @@ class FakeLLM:
         )
         self.grade = grade or EvidenceGrade(sufficient=True, reason="假评分：默认足够")
         self.grade_error = grade_error
+        # LLM 规划器（§4.5）：不配置 plan/plan_error 时规划调用抛错，
+        # plan 节点走规则回退——与真实 LLM 未注入/失败的行为一致。
+        self.plan = plan
+        self.plan_error = plan_error
         # 按次弹出诊断结果（测引用自检重试）；用尽后回落到固定 report。
         self._reports = list(reports) if reports else None
         self._schema = None
@@ -130,6 +136,12 @@ class FakeLLM:
             if self.grade_error is not None:
                 raise self.grade_error
             return self.grade
+        if self._schema is InvestigationPlan:
+            if self.plan_error is not None:
+                raise self.plan_error
+            if self.plan is None:
+                raise RuntimeError("FakeLLM 未配置 plan")
+            return self.plan
         if self._reports:
             return self._reports.pop(0)
         return self.report

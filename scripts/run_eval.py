@@ -31,6 +31,7 @@ def evaluate_record(graph, record: dict) -> dict:
     expected = record["expected"]
     result: dict = {"id": record["id"], "category": record["category"]}
     t0 = time.time()
+    events: list[dict] = []
     try:
         state = graph.invoke(
             {
@@ -41,7 +42,12 @@ def evaluate_record(graph, record: dict) -> dict:
                 "config": "",
                 "status": RunStatus.RUNNING,
             },
-            config={"configurable": {"thread_id": f"eval-{record['id']}"}},
+            config={
+                "configurable": {
+                    "thread_id": f"eval-{record['id']}",
+                    "event_sink": events.append,
+                }
+            },
         )
     except Exception as exc:  # 图执行失败本身就是一条指标
         result.update(
@@ -53,6 +59,11 @@ def evaluate_record(graph, record: dict) -> dict:
 
     result["elapsed"] = round(time.time() - t0, 1)
     result["execution_ok"] = True
+
+    # 检索计划入库（规划器 + 每轮检索词），Hit@5 未命中时可直接归因。
+    plans = [e["payload"] for e in events if e["type"] == "plan_created"]
+    if plans:
+        result["plans"] = plans
 
     # 中断即两类人工介入（§4.2/§4.6）：澄清暂停、危险确认暂停。
     interrupts = state.get("__interrupt__")
@@ -66,6 +77,13 @@ def evaluate_record(graph, record: dict) -> dict:
             result["status"] = "waiting_confirmation"
             result["clarification_ok"] = not expected["should_clarify"]
             result["confirmation_ok"] = expected["expect_confirmation"]
+            # 记录触发确认的建议与审查问题：能区分真实拦截与误触发。
+            diagnosis = state.get("diagnosis")
+            if diagnosis is not None:
+                result["fix_suggestions"] = diagnosis.fix_suggestions
+            review = state.get("review")
+            if review is not None:
+                result["review_issues"] = review.issues
         return result
 
     status = state["status"]

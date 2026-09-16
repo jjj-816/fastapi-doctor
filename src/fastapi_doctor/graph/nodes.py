@@ -1,8 +1,8 @@
 """诊断图的节点实现。
 
-确定性规则节点（分析、澄清、规划、重写、审查）与 LLM 节点（证据评分、
-诊断）并存：模型输出经 Pydantic 校验，LLM 未注入或调用失败时回退规则
-实现，保证流水线不因单次模型调用中断。
+确定性规则节点（分析、澄清、重写、审查）与 LLM 节点（检索规划、证据
+评分、诊断）并存：模型输出经 Pydantic 校验，LLM 未注入或调用失败时
+回退规则实现，保证流水线不因单次模型调用中断。
 """
 
 import re
@@ -205,13 +205,12 @@ def clarify_if_needed(state: DiagnosisState) -> dict:
     return updates
 
 
-def plan(state: DiagnosisState) -> dict:
-    """根据结构化故障信息生成首版假设、检索词和验证步骤。
+def _rule_based_plan(state: DiagnosisState) -> InvestigationPlan:
+    """规则版检索计划：宽泛词召回背景知识，精确词命中 BM25 强项。
 
-    检索词最多两条：宽泛词（框架 + 组件 + 状态码）负责召回背景知识；
-    异常栈存在时追加精确词（异常类名 + 根异常消息），命中 BM25 强项。
+    检索词最多两条：宽泛词（框架 + 组件 + 状态码）；异常栈存在时追加
+    精确词（异常类名 + 根异常消息），否则从日志尾行/描述提取关键词。
     """
-    _emit("node_started", {"node": "plan"})
     fault = state["fault_info"]
     traceback_info = state.get("traceback_info") or TracebackInfo()
 
@@ -240,13 +239,94 @@ def plan(state: DiagnosisState) -> dict:
             # 连日志都没有（解释型提问、用户跳过澄清）时，描述是唯一信息源。
             queries = _append_description_query(queries, state["description"])
 
-    plan = InvestigationPlan(
+    return InvestigationPlan(
         hypotheses=[f"检查 {fault.component or '应用'} 的输入、配置与运行环境"],
         search_queries=queries or [""],
         verification_steps=["用最小复现请求确认故障是否稳定出现"],
     )
-    _emit("plan_created", {"search_queries": plan.search_queries})
-    return {"plan": plan, "status": RunStatus.PLANNED}
+
+
+def build_plan_prompt(state: DiagnosisState) -> str:
+    """组装检索规划提示词（§4.5 的 LLM 规划器）。"""
+    fault = state["fault_info"]
+    return (
+        "你是一名 FastAPI 故障诊断助手的检索规划员。请依据故障信息制定检索"
+        "计划，用于在本地知识库（FastAPI/Pydantic/SQLAlchemy/Uvicorn/Docker/"
+        "OpenTelemetry/LangGraph 官方文档、历史故障案例与 Runbook）中召回证据。\n"
+        "要求：\n"
+        "1) search_queries 给 2~3 条检索词：第 1 条宽泛（框架与组件领域），"
+        "其余精确（异常类名、状态码、配置项、报错原文中的关键词）；\n"
+        "2) 检索词优先直接取自症状描述和日志的原文词（多为英文），不要发明"
+        "日志里不存在的异常类名或配置项；\n"
+        "3) hypotheses 给 1~3 条针对本次故障的可验证假设，具体、不要套话；\n"
+        "4) verification_steps 给 1~2 条用户可执行的验证步骤。\n\n"
+        "## 故障信息\n"
+        f"- 框架: {fault.framework or '未知'}\n"
+        f"- 组件: {fault.component or '未知'}\n"
+        f"- 异常类型: {fault.exception_type or '未知'}\n"
+        f"- HTTP 状态码: {fault.http_status or '未知'}\n"
+        f"- 症状描述: {state['description'][:800] or '（无）'}\n"
+        f"- 日志末尾: {state['logs'][-800:] or '（无）'}\n"
+        f"- 相关代码: {state['code'][:400] or '（无）'}\n"
+        f"- 相关配置: {state['config'][:400] or '（无）'}\n\n"
+        "请用中文输出 JSON（检索词本身保持原文用词）。"
+    )
+
+
+def make_plan_node(llm):
+    """构建 plan 节点：LLM 规划检索词与假设，未注入或失败时回退规则版。
+
+    LLM 规划的优势是检索词贴合语料词汇（中文描述也能提出英文检索词）、
+    假设针对本次故障而非套话；规则版保证无 LLM 时流水线照常运转。
+    两者并用而非二选一：LLM 检索词在前，规则精确词（异常类名/日志尾行
+    原文词）保底占最后一个名额——LLM 常把原文词改写成同义词或译成中文，
+    而 BM25 命中案例库靠的恰恰是原文词（基线评测 Hit@5 的差别所在）。
+    """
+
+    def plan(state: DiagnosisState) -> dict:
+        _emit("node_started", {"node": "plan"})
+        llm_plan = None
+        planner = "rule"
+        if llm is not None:
+            try:
+                llm_plan = _invoke_structured(
+                    llm, InvestigationPlan, build_plan_prompt(state)
+                )
+                planner = "llm"
+            except Exception:  # 单次规划失败不阻塞诊断流水线
+                llm_plan = None
+        if llm_plan is None or not [q for q in llm_plan.search_queries if q.strip()]:
+            llm_plan = _rule_based_plan(state)
+            planner = "rule"
+        queries = [q.strip() for q in llm_plan.search_queries if q.strip()]
+        if planner == "llm":
+            # 规则精确词保底并入末位名额（无精确词或已重复则跳过）。
+            reserved = next(
+                (q.strip() for q in _rule_based_plan(state).search_queries[1:] if q.strip()),
+                None,
+            )
+            if reserved and reserved not in queries:
+                queries = queries[: config.MAX_PLAN_QUERIES - 1]
+                queries.append(reserved)
+                planner = "llm+rule"
+        # 防御：限制检索词数量，避免单个计划撑爆提示词预算；空假设回退模板。
+        result_plan = llm_plan.model_copy(
+            update={
+                "search_queries": queries[: config.MAX_PLAN_QUERIES],
+                "hypotheses": llm_plan.hypotheses
+                or [
+                    f"检查 {state['fault_info'].component or '应用'} 的输入、"
+                    "配置与运行环境"
+                ],
+            }
+        )
+        _emit(
+            "plan_created",
+            {"search_queries": result_plan.search_queries, "planner": planner},
+        )
+        return {"plan": result_plan, "status": RunStatus.PLANNED}
+
+    return plan
 
 
 # 每个查询在每个来源类型上召回的子块数；父块去重后证据更少。
