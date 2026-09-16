@@ -55,7 +55,7 @@ flowchart TB
 前置：Python 3.11、[uv](https://docs.astral.sh/uv/)、[Ollama](https://ollama.com)（检索向量始终本地生成）。
 
 ```powershell
-git clone https://github.com/<your-name>/fastapi-doctor.git
+git clone https://github.com/jjj-816/fastapi-doctor.git
 cd fastapi-doctor
 
 uv sync                       # 安装后端依赖
