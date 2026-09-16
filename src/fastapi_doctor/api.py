@@ -216,10 +216,19 @@ async def stream_events(run_id: str, req: Request, after: int = 0) -> StreamingR
     async def event_stream():
         try:
             seq = after
-            for event in manager.events_after(run_id, seq):
+            history = manager.events_after(run_id, seq)
+            # 历史里的暂停事件（澄清/确认）不一定是流的终点：运行恢复后会
+            # 继续产生后续事件。只有当它是最后一条历史事件（运行确实停在
+            # 该暂停点或已终态）时才提前收流，否则回放到真实终点——
+            # 否则回放含历史中断的已完成运行时，前端状态会永远停在"等待"。
+            last_seq = history[-1]["seq"] if history else None
+            for event in history:
                 seq = event["seq"]
                 yield _sse(event)
-                if event["type"] in STREAM_TERMINAL_EVENTS:
+                if (
+                    event["type"] in STREAM_TERMINAL_EVENTS
+                    and event["seq"] == last_seq
+                ):
                     return
             while True:
                 if await req.is_disconnected():

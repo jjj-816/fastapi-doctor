@@ -248,6 +248,41 @@ def test_sse_streams_event_sequence(monkeypatch, tmp_path, make_fake_retriever) 
     assert events[-1] == "run_completed"
 
 
+def test_sse_replay_of_resumed_run_reaches_terminal(monkeypatch, tmp_path, make_fake_retriever) -> None:
+    """回放含历史澄清的已完成运行：不得停在中途的暂停事件上（§6.3 回放完整性）。"""
+    client = make_client(monkeypatch, tmp_path, make_fake_retriever, FakeLLM())
+    with client:
+        run_id = client.post("/api/runs", json={"description": "接口出错了"}).json()["run_id"]
+        wait_for_status(client, run_id, "waiting_clarification")
+        client.post(f"/api/runs/{run_id}/resume", json={"answers": {}})
+        wait_for_status(client, run_id, "completed")
+
+        events: list[str] = []
+        with client.stream("GET", f"/api/runs/{run_id}/events") as response:
+            for line in response.iter_lines():
+                if line.startswith("event: "):
+                    events.append(line[len("event: "):])
+
+    assert "clarification_required" in events
+    assert events[-1] == "run_completed"
+
+
+def test_sse_replay_of_waiting_run_stops_at_pause(monkeypatch, tmp_path, make_fake_retriever) -> None:
+    """仍在等待澄清的运行：回放到暂停事件即收流（与旧行为一致）。"""
+    client = make_client(monkeypatch, tmp_path, make_fake_retriever, FakeLLM())
+    with client:
+        run_id = client.post("/api/runs", json={"description": "接口出错了"}).json()["run_id"]
+        wait_for_status(client, run_id, "waiting_clarification")
+
+        events: list[str] = []
+        with client.stream("GET", f"/api/runs/{run_id}/events") as response:
+            for line in response.iter_lines():
+                if line.startswith("event: "):
+                    events.append(line[len("event: "):])
+
+    assert events[-1] == "clarification_required"
+
+
 def test_clarification_pause_and_resume(monkeypatch, tmp_path, make_fake_retriever) -> None:
     client = make_client(monkeypatch, tmp_path, make_fake_retriever, FakeLLM())
     with client:

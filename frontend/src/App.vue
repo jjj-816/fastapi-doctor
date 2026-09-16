@@ -59,9 +59,19 @@ function onStreamEvent(ev) {
   if (!c) return
   if (ev.seq && ev.seq > lastSeq.value) lastSeq.value = ev.seq
   c.events.push(ev)
-  if (ev.type === 'clarification_required') c.status = 'waiting_clarification'
-  else if (ev.type === 'confirmation_required') c.status = 'waiting_confirmation'
-  else if (ev.type === 'run_completed' || ev.type === 'run_failed') loadSnapshot(c.id)
+  // 暂停/恢复事件只在语义成立的当前状态下生效：回放历史事件时不得
+  // 覆盖快照带来的真实状态（否则已完成运行会错标成"等待补充信息"）。
+  if (ev.type === 'clarification_required') {
+    if (c.status === 'running') c.status = 'waiting_clarification'
+  } else if (ev.type === 'confirmation_required') {
+    if (c.status === 'running') c.status = 'waiting_confirmation'
+  } else if (ev.type === 'run_resumed') {
+    if (c.status === 'waiting_clarification' || c.status === 'waiting_confirmation') {
+      c.status = 'running'
+    }
+  } else if (ev.type === 'run_completed' || ev.type === 'run_failed') {
+    loadSnapshot(c.id)
+  }
   scrollToBottom()
 }
 
