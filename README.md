@@ -2,7 +2,7 @@
 
 面向 Python Web 服务的智能故障诊断 Agent：提交故障描述与报错日志，Agent 检索本地知识库（官方文档 / 历史案例 / Runbook 三源），评估证据充分性，产出**引用可溯源**的诊断报告；证据不足时如实说明「知识库未覆盖」，而不是编造答案。
 
-> 个人作品集项目，7 天从零实现（[设计文档](docs/superpowers/specs/2026-09-14-fastapi-doctor-design.md)）。技术栈：Python 3.11 · FastAPI · LangGraph · Qdrant · SQLite · Vue 3。
+技术栈：Python 3.11 · FastAPI · LangGraph · Qdrant · SQLite · Vue 3
 
 ## 界面
 
@@ -41,7 +41,7 @@ flowchart TB
     I2 -->|Command(resume)| V
 ```
 
-几个值得一提的实现点：
+实现要点：
 
 - **混合检索与分源工具**：dense（Ollama 本地向量）+ BM25（Qdrant sparse）经 RRF 融合，按 `source_type` 分成三个检索工具；改写重查时证据池按父块**累积**而不是每轮重建，首轮命中的好证据不会被冲掉。
 - **评分规则先行**：空证据直接判不足、异常类名在证据词面命中直接判足够，模糊情况才调 LLM——典型运行从 4~5 次模型调用降到 2~3 次。消息泛词（如 `reached`）故意不算强信号，避免 SQLAlchemy 池文档把 Redis 问题误判为「证据充分」。
@@ -111,3 +111,7 @@ tests/                # 75 个测试（假 LLM + 内存 Qdrant，不依赖外部
 - 危险命令扫描是词面规则：信息型提问（如「为什么 docker volume rm 失败」）也会触发人工确认——安全侧误报，属已知取舍。
 - 回答质量取决于所配模型：本地 qwen3:0.6b 的根因准确率明显低于在线模型（评测中已验证检索管线无差别）。
 - 知识库语料规模见设计文档 §5.1；案例与 Runbook 为自建内容，不随仓库分发。
+
+## 设计文档
+
+系统设计、节点职责与评测指标定义见 [docs/superpowers/specs/2026-09-14-fastapi-doctor-design.md](docs/superpowers/specs/2026-09-14-fastapi-doctor-design.md)。
