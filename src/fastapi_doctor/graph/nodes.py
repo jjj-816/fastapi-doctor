@@ -583,7 +583,12 @@ def route_after_grade(state: DiagnosisState) -> str:
 
 
 def build_diagnosis_prompt(state: DiagnosisState) -> str:
-    """组装诊断提示词：故障材料 + 截断后的证据，要求只依据证据下结论。"""
+    """组装诊断提示词：故障材料 + 截断后的证据，要求只依据证据下结论。
+
+    评分节点判证据不足时（改写上限仍不足），把评分理由传给诊断——没有
+    这段，诊断只看到表面相似的证据（如问 Redis 却检索到 SQLAlchemy 连接
+    池案例），会理直气壮地类比推理并给出中高置信度（评测集外实测）。
+    """
     fault = state["fault_info"]
     evidence = state.get("evidence", [])[: config.MAX_EVIDENCE_ITEMS]
     evidence_blocks = []
@@ -597,6 +602,21 @@ def build_diagnosis_prompt(state: DiagnosisState) -> str:
     parent_ids = [item.parent_id for item in evidence]
     doc_ids = sorted({item.doc_id for item in evidence})
 
+    grade = state.get("grade")
+    if grade is not None and not grade.sufficient:
+        evidence_status = (
+            "## 证据状态（评分节点判定：不足）\n"
+            f"评分理由：{grade.reason}\n"
+            "上述证据可能只与故障表面相似（如故障涉及 Redis 而证据讲"
+            " SQLAlchemy 连接池）。因此：\n"
+            "- 若证据与故障的技术/组件不匹配，most_likely_cause 必须如实"
+            "说明\"本地知识库未覆盖该故障场景\"，confidence 不得超过 0.3，"
+            "修复建议只给通用排查方向并注明证据缺口；\n"
+            "- 严禁把不同技术的证据当作同类案例类比推理。\n\n"
+        )
+    else:
+        evidence_status = ""
+
     return (
         "你是一名 Python Web 服务故障诊断专家。请只依据给定证据给出诊断，"
         "不要编造证据中不存在的事实；证据不足时降低置信度并说明。\n\n"
@@ -607,7 +627,7 @@ def build_diagnosis_prompt(state: DiagnosisState) -> str:
         f"- 组件: {fault.component or '未知'}\n"
         f"- 异常类型: {fault.exception_type or '未知'}\n"
         f"- HTTP 状态码: {fault.http_status or '未知'}\n\n"
-        f"## 检索证据\n{evidence_text}\n\n"
+        f"{evidence_status}## 检索证据\n{evidence_text}\n\n"
         "请用中文输出 JSON，字段为：most_likely_cause（最可能原因）、"
         "confidence（0 到 1 的小数）、"
         "supporting_evidence（引用证据时只填证据块方括号里的 parent_id）、"
@@ -719,6 +739,12 @@ def review(state: DiagnosisState) -> dict:
         issues.append(f"结论引用了不存在或未检索到的证据：{unknown}")
     if evidence and not report.supporting_evidence:
         issues.append("已有检索证据，但结论未引用任何证据")
+
+    # 确定性兜底：评分判证据不足（重写上限仍不足）时，无论模型结论写
+    # 得多自信，审查都如实标注——不阻塞诊断，但用户能看到保留意见。
+    grade = state.get("grade")
+    if grade is not None and not grade.sufficient:
+        issues.append("证据评分不足：结论基于弱相关证据，仅供参考")
 
     dangerous = _find_dangerous_commands(
         [*report.fix_suggestions, state["description"]]

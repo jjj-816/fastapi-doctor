@@ -228,6 +228,11 @@ def test_grade_loop_rewrites_up_to_cap(make_fake_retriever) -> None:
     # 证据不足也不阻塞诊断，但结论必须经过审查。
     assert result["status"] == RunStatus.COMPLETED
     assert result["review"].passed is False
+    # 评分状态传入诊断提示词（诚实降级：跨技术证据不得类比成同类案例），
+    # 审查再确定性标注保留意见——双保险，不依赖模型自觉。
+    assert "评分理由" in llm.prompts[-1]
+    assert "未覆盖该故障场景" in llm.prompts[-1]
+    assert any("证据评分不足" in issue for issue in result["review"].issues)
 
 
 def test_grade_llm_failure_falls_back_to_rules(make_fake_retriever) -> None:
