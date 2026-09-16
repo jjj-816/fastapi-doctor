@@ -37,8 +37,8 @@ flowchart TB
         V -- 含危险命令 --> I2[[interrupt：等待人工确认]]
     end
     R --> Q[("Qdrant<br/>dense + BM25 → RRF 融合<br/>父子分块 small-to-big")]
-    I1 -->|Command(resume)| A
-    I2 -->|Command(resume)| V
+    I1 -->|"Command(resume)"| A
+    I2 -->|"Command(resume)"| V
 ```
 
 实现要点：
